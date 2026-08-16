@@ -1,0 +1,14 @@
+{
+  "id": "wallfou/arc2-wheelhouse",
+  "title": "arc2-wheelhouse",
+  "code_file": "arc2_wheelhouse.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}

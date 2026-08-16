@@ -22,9 +22,39 @@ COMPETITION = "arc-prize-2026-arc-agi-2"
 INPUT_DIR = os.environ.get("ARC_INPUT_DIR", "/kaggle/input")
 WORK_DIR = os.environ.get("ARC_WORK_DIR", "/kaggle/working")
 
-DATA_DIR = os.path.join(INPUT_DIR, COMPETITION)
+TEST_FILE = "arc-agi_test_challenges.json"
 
-TEST_CHALLENGES = os.path.join(DATA_DIR, "arc-agi_test_challenges.json")
+
+def find_data_dir():
+    """Locate the competition data by filename rather than by mount path.
+
+    Kaggle's mount layout is not one thing: datasets land at
+    /kaggle/input/<slug>/, notebook outputs at
+    /kaggle/input/notebooks/<owner>/<slug>/, and the competition directory name
+    does not always equal the competition slug. Search for the file instead.
+    """
+    if os.environ.get("ARC_DATA_DIR"):
+        return os.environ["ARC_DATA_DIR"]
+
+    direct = os.path.join(INPUT_DIR, COMPETITION)
+    if os.path.exists(os.path.join(direct, TEST_FILE)):
+        return direct
+
+    hits = glob.glob(os.path.join(INPUT_DIR, "**", TEST_FILE), recursive=True)
+    if hits:
+        return os.path.dirname(sorted(hits, key=len)[0])
+
+    raise FileNotFoundError(
+        f"Could not find {TEST_FILE} anywhere under {INPUT_DIR}. Attach the "
+        f"'{COMPETITION}' competition to this notebook.\n"
+        f"Present: {sorted(glob.glob(os.path.join(INPUT_DIR, '*')))}"
+    )
+
+
+DATA_DIR = find_data_dir() if os.path.isdir(INPUT_DIR) else os.path.join(
+    INPUT_DIR, COMPETITION)
+
+TEST_CHALLENGES = os.path.join(DATA_DIR, TEST_FILE)
 EVAL_CHALLENGES = os.path.join(DATA_DIR, "arc-agi_evaluation_challenges.json")
 EVAL_SOLUTIONS = os.path.join(DATA_DIR, "arc-agi_evaluation_solutions.json")
 
@@ -38,19 +68,25 @@ SUBMISSION_PATH = os.path.join(WORK_DIR, "submission.json")
 def model_path():
     """Resolve an attached Kaggle model to its weights directory.
 
-    Kaggle mounts models at /kaggle/input/<slug>/<framework>/<variation>/<ver>/,
-    and the version number changes between attachments, so glob for it rather
-    than hardcoding. Falls back to a plain directory for local testing.
+    Verified layout (2026-08):
+        /kaggle/input/models/<owner>/<slug>/<framework>/<variation>/<version>/
+    The owner prefix and version both vary, so search for config.json under any
+    directory whose path contains the slug rather than assuming a depth.
     """
-    direct = os.path.join(INPUT_DIR, MODEL_SLUG)
-    hits = sorted(glob.glob(os.path.join(direct, "*", "*", "*", "config.json")))
+    if os.environ.get("ARC_MODEL_DIR"):
+        return os.environ["ARC_MODEL_DIR"]
+
+    hits = [p for p in glob.glob(os.path.join(INPUT_DIR, "**", "config.json"),
+                                 recursive=True)
+            if MODEL_SLUG in p]
     if hits:
-        return os.path.dirname(hits[-1])
-    if os.path.exists(os.path.join(direct, "config.json")):
-        return direct
+        # Shortest path wins: avoids nested subdirs like ./checkpoint/config.json
+        return os.path.dirname(sorted(hits, key=len)[0])
+
     raise FileNotFoundError(
-        f"No config.json under {direct}. Attach the Kaggle model "
-        f"'sorokin/{MODEL_SLUG}' to this notebook, or set ARC_MODEL_SLUG."
+        f"No config.json for '{MODEL_SLUG}' under {INPUT_DIR}. Attach the Kaggle "
+        f"model 'sorokin/{MODEL_SLUG}' to this notebook, or set ARC_MODEL_DIR.\n"
+        f"Present: {sorted(glob.glob(os.path.join(INPUT_DIR, '*')))}"
     )
 
 

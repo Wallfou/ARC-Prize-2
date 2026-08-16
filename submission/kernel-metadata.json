@@ -1,0 +1,20 @@
+{
+  "id": "wallfou/arc2-nvarc-2026",
+  "title": "arc2-nvarc-2026",
+  "code_file": "arc2_nvarc.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": false,
+  "dataset_sources": [],
+  "competition_sources": [
+    "arc-prize-2026-arc-agi-2"
+  ],
+  "kernel_sources": [
+    "wallfou/arc2-wheelhouse"
+  ],
+  "model_sources": [
+    "sorokin/qwen3_2b_grids15_sft141/transformers/bfloat16/1"
+  ]
+}
