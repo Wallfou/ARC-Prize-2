@@ -21,6 +21,7 @@ SRC = os.path.join(HERE, "src")
 PY_FILES = [
     "arc_config.py",
     "arc_loader.py",
+    "arc_mask.py",
     "arc_decoder.py",
     "arc_solver.py",
     "make_submission.py",

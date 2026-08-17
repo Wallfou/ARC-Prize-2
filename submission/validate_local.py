@@ -178,6 +178,56 @@ def check_max_new_tokens():
           f"{n} tokens")
 
 
+def check_completion_masking():
+    """The answer grids must be supervised; the question grids must not.
+
+    Regression test for the NaN-loss bug: NVARC keyed off the `user`/`assistant`
+    token ids, which this checkpoint's tokenizer drops during encoding, so every
+    label was masked and the loss was NaN over zero targets.
+    """
+    from arc_mask import completion_labels
+
+    IM_START, NL, EOS = 14, 10, 15
+    USER, ASSIST = 11, 12
+
+    def turn(role_id, content):
+        ids = [IM_START]
+        if role_id is not None:
+            ids.append(role_id)
+        return ids + [NL] + content + [EOS]
+
+    q1, a1 = [1, 2, NL, 3, 4], [5, 6]
+    q2, a2 = [7, 8], [9, 0, NL, 1]
+
+    for label, role_u, role_a in [("with role words", USER, ASSIST),
+                                  ("role words dropped", None, None)]:
+        ids = (turn(role_u, q1) + turn(role_a, a1)
+               + turn(role_u, q2) + turn(role_a, a2))
+        lab = completion_labels(ids, IM_START, EOS, NL)
+
+        supervised = [int(v) for v in lab if v != -100]
+        expected = a1 + [EOS] + a2 + [EOS]
+        check(f"masking supervises exactly the answers ({label})",
+              supervised == expected, f"got {supervised}, want {expected}")
+
+        # No prompt cell may leak into the targets.
+        pos_q = set()
+        i = 0
+        for content, is_answer in [(q1, False), (a1, True), (q2, False), (a2, True)]:
+            head = 2 if role_u is not None else 1
+            i += head + 1
+            if not is_answer:
+                pos_q.update(range(i, i + len(content)))
+            i += len(content) + 1
+        check(f"no prompt token is supervised ({label})",
+              all(lab[p] == -100 for p in sorted(pos_q) if p < len(lab)))
+
+    # A malformed sequence must not raise, just supervise nothing.
+    lab = completion_labels([IM_START, NL, 1, 2], IM_START, EOS, NL)
+    check("unterminated turn masks everything rather than crashing",
+          all(v == -100 for v in lab))
+
+
 def check_end_to_end(data_dir):
     """Fabricate DFS candidates and run the real aggregation path.
 
@@ -263,6 +313,8 @@ def main():
     print()
     check_sequence_lengths(data_dir)
     check_max_new_tokens()
+    print()
+    check_completion_masking()
     print()
     check_end_to_end(data_dir)
 

@@ -1,5 +1,6 @@
 from unsloth import FastLanguageModel, UnslothTrainingArguments, UnslothTrainer
 from arc_loader import ArcDataset, QwenFormatter
+from arc_mask import completion_labels
 
 import arc_config
 
@@ -46,6 +47,57 @@ USER_TOKEN_ID = 11
 ASSISTANT_TOKEN_ID = 12
 PAD_ID = 13
 EOS_ID = 15
+IM_START_ID = 14
+NEWLINE_ID = 10
+
+
+def init_vocab(tokenizer, rank=0):
+    """Resolve the special token ids from the tokenizer actually in use.
+
+    NVARC hardcoded these for the 4B checkpoint's 16-token vocabulary. The 2B
+    checkpoint is cut from a different base model, so the ids need not match --
+    and if `user`/`assistant` resolve elsewhere, the completion-only collator
+    finds no turn boundaries, masks every label, and the loss becomes NaN over
+    zero targets. Derive them instead, and verify against a real encoding.
+    """
+    global ARC_TOKENS, USER_TOKEN_ID, ASSISTANT_TOKEN_ID, PAD_ID, EOS_ID
+    global IM_START_ID, NEWLINE_ID
+
+    def tid(tok, default=None):
+        try:
+            i = tokenizer.convert_tokens_to_ids(tok)
+        except Exception:
+            return default
+        return default if i is None or i < 0 else int(i)
+
+    USER_TOKEN_ID = tid("user", USER_TOKEN_ID)
+    ASSISTANT_TOKEN_ID = tid("assistant", ASSISTANT_TOKEN_ID)
+    EOS_ID = tid("<|im_end|>", EOS_ID)
+    IM_START_ID = tid("<|im_start|>", IM_START_ID)
+    NEWLINE_ID = tid("Ċ", NEWLINE_ID)
+    PAD_ID = (int(tokenizer.pad_token_id)
+              if getattr(tokenizer, "pad_token_id", None) is not None
+              else tid("<|endoftext|>", PAD_ID))
+
+    digits = [tid(str(d)) for d in range(10)]
+    newline = tid("Ċ")
+    ARC_TOKENS = [t for t in digits + [newline, EOS_ID] if t is not None]
+
+    print(f"[Rank {rank}] vocab: user={USER_TOKEN_ID} assistant={ASSISTANT_TOKEN_ID} "
+          f"eos={EOS_ID} pad={PAD_ID} arc_tokens={ARC_TOKENS}")
+
+    # Verify against text in the exact shape the formatter emits.
+    probe = "<|im_start|>user\n1<|im_end|><|im_start|>assistant\n2<|im_end|>"
+    try:
+        ids = tokenizer.encode(probe)
+        ok = USER_TOKEN_ID in ids and ASSISTANT_TOKEN_ID in ids and EOS_ID in ids
+        print(f"[Rank {rank}] vocab probe ids={ids} turn_markers_found={ok}")
+        if not ok:
+            print(f"[Rank {rank}] !!! turn markers absent from encoded text -- "
+                  f"the collator cannot find turn boundaries and every label "
+                  f"will be masked (NaN loss)")
+    except Exception as e:
+        print(f"[Rank {rank}] vocab probe failed: {type(e).__name__}: {e}")
 
 
 class UnslothFixedTrainer(UnslothTrainer):
@@ -79,20 +131,22 @@ class UnslothFixedTrainer(UnslothTrainer):
 class QwenDataCollatorForCompletionOnlyLM(DataCollatorForLanguageModeling):
 
     def torch_call(self, examples: list[Union[list[int], Any, dict[str, Any]]]) -> dict[str, Any]:
+        # Supervise only the assistant turns, i.e. the answer grids.
+        #
+        # NVARC located turn starts by the `user` / `assistant` token ids. On this
+        # checkpoint those words are dropped during encoding -- the ids resolve
+        # fine via convert_tokens_to_ids, but tokenizer.encode() never emits them
+        # -- so no boundary was ever found, every label stayed -100, and the loss
+        # became NaN over zero targets. Anchor on <|im_start|> / <|im_end|>, which
+        # do survive, and find the newline that terminates the role header. That
+        # works whether or not the role word is present.
         batch = super().torch_call(examples)
         for i in range(len(examples)):
-            labels = batch["input_ids"][i].clone()
-            user_start_idx = np.where(labels == USER_TOKEN_ID)[0].tolist()
-            assistant_start_idx = np.where(labels == ASSISTANT_TOKEN_ID)[0].tolist()
-            start_idx = sorted(user_start_idx + assistant_start_idx)
-            end_idx = np.where(labels == EOS_ID)[0]
-            batch["labels"][i, :] = -100
-            for j, (start, end) in enumerate(zip(start_idx, end_idx)):
-                assert start < end
-                if j % 2 == 1:
-                    start += 2
-                    end += 1
-                    batch["labels"][i, start:end] = labels[start:end]
+            ids = batch["input_ids"][i]
+            labels = completion_labels(
+                ids.cpu().numpy(), IM_START_ID, EOS_ID, NEWLINE_ID)
+            batch["labels"][i] = torch.as_tensor(
+                labels, dtype=batch["labels"].dtype, device=batch["labels"].device)
         return batch
 
 
@@ -270,10 +324,18 @@ def worker(rank, queue, end_time):
         max_seq_length=max_seq_length,
     )
 
+    init_vocab(tokenizer, rank)
+
     model = FastLanguageModel.get_peft_model(model, **peft_params)
 
+    # NVARC cast every fp32 param to bf16 to save VRAM. Unsloth now deliberately
+    # keeps the embedding adapters in fp32 ("Training embed_tokens in mixed
+    # precision"), so stomping those to bf16 fights its own scheme. We have room
+    # to spare on L4 (peak 8.6 of 22 GB), so leave them alone.
     for name, param in model.named_parameters():
         if param.dtype == torch.float32:
+            if "embed_tokens" in name or "lm_head" in name:
+                continue
             param.data = param.data.to(torch.bfloat16)
 
     default_weights = get_peft_model_state_dict(model, adapter_name="default")
@@ -325,6 +387,25 @@ def worker(rank, queue, end_time):
         train_ds = puzzle_ds.augment(n=16, shfl_keys=True, seed=1)
         train_ds = train_ds.cut_to_len(formatter=formatter, name="text", max_len=max_seq_length)
 
+        # One-off check that the completion-only collator still masks correctly.
+        # If transformers changed DataCollatorForLanguageModeling under us, every
+        # label could come back -100, and a loss over zero targets is NaN -- which
+        # looks identical to an exploding-gradient NaN in the training stats.
+        if num_done == 0:
+            try:
+                probe = [{"input_ids": tokenizer.encode(s["text"])}
+                         for s in train_ds.as_list(formatter)[:2]]
+                b = collator(probe)
+                n_lab = int((b["labels"] != -100).sum())
+                n_tok = int(b["labels"].numel())
+                print(f"[Rank {rank}] collator check: {n_lab}/{n_tok} tokens "
+                      f"supervised ({100 * n_lab / max(n_tok, 1):.1f}%)")
+                if n_lab == 0:
+                    print(f"[Rank {rank}] !!! collator masks EVERYTHING -- "
+                          f"loss will be NaN regardless of the model")
+            except Exception as e:
+                print(f"[Rank {rank}] collator check failed: {type(e).__name__}: {e}")
+
         with io.StringIO() as buf, redirect_stdout(buf), redirect_stderr(buf):
             
             trainer = UnslothFixedTrainer(
@@ -354,6 +435,14 @@ def worker(rank, queue, end_time):
         torch.cuda.reset_peak_memory_stats()
         
         print(f"[Rank {rank}] training stats for puzzle {key}: {stats}")
+
+        # A NaN loss means test-time fine-tuning learned nothing for this puzzle.
+        # The run still completes and still emits candidates, so this would be
+        # invisible without saying it out loud.
+        loss = stats.metrics.get("train_loss") if hasattr(stats, "metrics") else None
+        if loss is None or loss != loss:
+            print(f"[Rank {rank}] !!! NaN training loss on {key} -- TTFT is not "
+                  f"adapting the model; predictions are effectively untrained")
 
         puzzle_ds_multi = puzzle_ds.split_multi_replies()
 
