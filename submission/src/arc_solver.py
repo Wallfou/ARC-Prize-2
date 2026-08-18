@@ -100,6 +100,49 @@ def init_vocab(tokenizer, rank=0):
         print(f"[Rank {rank}] vocab probe failed: {type(e).__name__}: {e}")
 
 
+def diagnose_tokenizer(tokenizer, rank=0):
+    """Two checks that would otherwise fail silently and cost a submission.
+
+    1. Compare unsloth's tokenizer against a plain AutoTokenizer load of the same
+       directory. The checkpoint's tokenizer.json is byte-identical to the copy
+       in our repo, which *does* emit the `user` / `assistant` ids when driven
+       directly -- so if the plain load works and unsloth's does not, the damage
+       is being done while loading, not by the file.
+    2. Round-trip a grid: text -> ids -> text. Decoding is how candidate answers
+       become grids again, and if newlines do not survive, every answer parses as
+       a single row -- wrong shape, zero score, no error anywhere.
+    """
+    if rank != 0:
+        return
+
+    probe = "<|im_start|>user\n1<|im_end|><|im_start|>assistant\n2<|im_end|>"
+    try:
+        from transformers import AutoTokenizer
+        plain = AutoTokenizer.from_pretrained(arc_config.model_path(),
+                                              local_files_only=True)
+        theirs, ours = plain.encode(probe), tokenizer.encode(probe)
+        print(f"[Rank {rank}] AutoTokenizer : {theirs}")
+        print(f"[Rank {rank}] unsloth       : {ours}")
+        if theirs != ours:
+            print(f"[Rank {rank}] !!! unsloth altered the tokenizer; the plain "
+                  f"load is the correct behaviour")
+    except Exception as e:
+        print(f"[Rank {rank}] tokenizer comparison failed: {type(e).__name__}: {e}")
+
+    grid_text = "123\n456\n789"
+    try:
+        ids = tokenizer.encode(grid_text)
+        back = tokenizer.decode(ids)
+        rows = [r for r in back.strip().split("\n") if r]
+        ok = back.strip() == grid_text and len(rows) == 3
+        print(f"[Rank {rank}] grid round-trip ids={ids} -> {back!r} rows={len(rows)} ok={ok}")
+        if not ok:
+            print(f"[Rank {rank}] !!! grids do not survive decode -- answers will "
+                  f"parse with the wrong shape and score zero")
+    except Exception as e:
+        print(f"[Rank {rank}] grid round-trip failed: {type(e).__name__}: {e}")
+
+
 class UnslothFixedTrainer(UnslothTrainer):
 
     # Issue https://github.com/unslothai/unsloth/issues/2435
@@ -325,6 +368,7 @@ def worker(rank, queue, end_time):
     )
 
     init_vocab(tokenizer, rank)
+    diagnose_tokenizer(tokenizer, rank)
 
     model = FastLanguageModel.get_peft_model(model, **peft_params)
 
@@ -352,7 +396,7 @@ def worker(rank, queue, end_time):
 
     max_score = -np.log(0.2)
 
-    arc_test_set = ArcDataset.from_file(arc_config.TEST_CHALLENGES)
+    arc_test_set = ArcDataset.from_file(arc_config.CHALLENGES)
 
     dir_outputs = arc_config.OUTPUT_DIR
     os.makedirs(dir_outputs, exist_ok=True)

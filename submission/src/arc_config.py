@@ -58,6 +58,26 @@ TEST_CHALLENGES = os.path.join(DATA_DIR, TEST_FILE)
 EVAL_CHALLENGES = os.path.join(DATA_DIR, "arc-agi_evaluation_challenges.json")
 EVAL_SOLUTIONS = os.path.join(DATA_DIR, "arc-agi_evaluation_solutions.json")
 
+
+# --- Which task set to solve -------------------------------------------------
+# "test" is the scored path. "eval" solves the 120 public evaluation tasks,
+# whose answers ship with the competition, so a commit run yields a real
+# accuracy number without spending one of the 1-per-day submissions.
+#
+# Comparable published baseline: NVARC's paper (Table 2) reports 25/120 on this
+# same split for the 2B checkpoint, and 30/120 for the 4B. Both were measured
+# with the same contamination we have -- 55% of their training data was seeded
+# from these very puzzles' descriptions -- so the comparison is apples to
+# apples even though the absolute number reads high.
+TASK_SET = os.environ.get("ARC_TASK_SET", "test")
+assert TASK_SET in ("test", "eval"), TASK_SET
+
+CHALLENGES = TEST_CHALLENGES if TASK_SET == "test" else EVAL_CHALLENGES
+SOLUTIONS = None if TASK_SET == "test" else EVAL_SOLUTIONS
+
+# 0 = every task. Set lower to sample the split for a faster signal.
+TASK_LIMIT = int(os.environ.get("ARC_TASK_LIMIT", 0))
+
 # NVARC wrote these to '../inference_outputs' and '../worker{rank}', which on
 # Kaggle resolve to /kaggle/ -- not writable. Keep them under /kaggle/working.
 OUTPUT_DIR = os.path.join(WORK_DIR, "inference_outputs")

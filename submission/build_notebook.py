@@ -145,7 +145,17 @@ def build(model_slug, out_path):
             "import time, os\n"
             "NOTEBOOK_START = time.time()\n"
             f'os.environ["ARC_MODEL_SLUG"] = "{model_slug}"\n'
-            'print("start", time.strftime("%H:%M:%S"))'
+            "\n"
+            "# 'test'  -> the scored path (240 hidden tasks on a rerun, 4 smoke\n"
+            "#            tasks on a commit).\n"
+            "# 'eval'  -> the 120 public evaluation tasks, whose answers ship with\n"
+            "#            the competition. A commit run then prints a real accuracy\n"
+            "#            number and costs zero submissions. NVARC's published\n"
+            "#            baseline on this split is 25/120 for the 2B, 30/120 for 4B.\n"
+            'os.environ["ARC_TASK_SET"] = "test"\n'
+            'os.environ["ARC_TASK_LIMIT"] = "0"   # >0 samples the split\n'
+            'print("start", time.strftime("%H:%M:%S"), "| set",'
+            ' os.environ["ARC_TASK_SET"])'
         ),
         code(INSTALL),
         code(f'PATCH_B64 = "{patch_b64}"'),

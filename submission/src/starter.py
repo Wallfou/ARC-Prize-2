@@ -43,21 +43,26 @@ if __name__ == "__main__":
 
     rerun_mode = arc_config.is_rerun()
 
-    with open(arc_config.TEST_CHALLENGES, "r") as f:
+    with open(arc_config.CHALLENGES, "r") as f:
         data = json.load(f)
 
     os.makedirs(arc_config.WORKER_FLAG_DIR, exist_ok=True)
     os.makedirs(arc_config.OUTPUT_DIR, exist_ok=True)
 
     keys = sorted(data.keys())
-    if not rerun_mode:
-        # Commit run: the shipped test file is a placeholder of training tasks,
-        # so solving all of it is both meaningless and slow. Solve a few to
-        # prove the pipeline, and let make_submission.py fill in the rest.
+    if arc_config.TASK_SET == "eval":
+        # Public evaluation split: answers ship with the competition, so solving
+        # it in a commit run gives a real accuracy number for zero submissions.
+        if arc_config.TASK_LIMIT:
+            keys = keys[:arc_config.TASK_LIMIT]
+    elif not rerun_mode:
+        # Commit run on the scored path: the shipped test file is a placeholder
+        # of training tasks, so solving all of it is meaningless and slow. Solve
+        # a few to prove the pipeline; make_submission.py fills in the rest.
         keys = [k for k in keys if k in arc_config.SMOKE_TEST_KEYS] or keys[:4]
 
     print(
-        f"*** rerun={rerun_mode} tasks={len(keys)}/{len(data)} "
+        f"*** set={arc_config.TASK_SET} rerun={rerun_mode} tasks={len(keys)}/{len(data)} "
         f"workers={arc_config.NUM_WORKERS} "
         f"budget={(end_time - time.time()) / 3600:.2f}h",
         flush=True,

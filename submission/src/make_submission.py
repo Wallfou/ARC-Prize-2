@@ -31,7 +31,7 @@ def write_fallback(challenges_path=None, out_path=None):
     Kaggle scores a missing or malformed submission.json as a hard failure, so
     write the all-[[0]] skeleton first and overwrite it later with real answers.
     """
-    challenges_path = challenges_path or arc_config.TEST_CHALLENGES
+    challenges_path = challenges_path or arc_config.CHALLENGES
     out_path = out_path or arc_config.SUBMISSION_PATH
 
     data = ArcDataset.from_file(challenges_path)
@@ -84,7 +84,8 @@ def validate_format(submission, challenges):
 
 
 def build(selector="kgmon", challenges_path=None, solutions_path=None, out_path=None):
-    challenges_path = challenges_path or arc_config.TEST_CHALLENGES
+    challenges_path = challenges_path or arc_config.CHALLENGES
+    solutions_path = solutions_path or arc_config.SOLUTIONS
     out_path = out_path or arc_config.SUBMISSION_PATH
 
     data = ArcDataset.from_file(challenges_path)
