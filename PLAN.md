@@ -1,5 +1,31 @@
 # ARC Prize 2026 — Iteration Plan
 
+> **Status 2026-08-19 — leaderboard 20.69% (v19), 75 days to the deadline.**
+>
+> The NVARC port is verified faithful: 20.69% against their published 22.22% for
+> the same 2B checkpoint, inside their stated run-to-run variance. Getting there
+> took three bugs (offline install, NaN loss, malformed prompts) — all recorded in
+> the Notion doc *Iteration 1 : Notes* and in [notes/](notes/).
+>
+> **Corrections to what follows, learned the hard way:**
+>
+> | This plan said | Reality |
+> |---|---|
+> | Throughput is the binding constraint | It isn't. ~143s/task on L4x4 means 240 tasks in ~2.4h of a 12h budget. |
+> | A faithful recreation lands outside the money | Too pessimistic. 8th place is 33.61 and sits at the top edge of a crowded cluster, not far beyond it. |
+> | Validate offline on the 120 public eval tasks | Saturated by contamination: 82.6% offline vs 20.69% on the leaderboard. Useful only as a pre-flight check, never as a score. |
+> | The 2026 hidden set may have been refreshed | Effectively ruled out — reaching 20.69% would not have been possible otherwise. |
+>
+> **Immediate next step:** switch to the 4B checkpoint. NVARC scored 29.72% with
+> it, and 400+ teams sit in a cluster at exactly that level, so the number
+> reproduces. The compute budget is already there.
+>
+> **The measurement constraint is now the real one.** No public set can score a
+> change, so every experiment costs one of ~75 remaining submission days. Batch
+> changes; reason before spending.
+
+---
+
 > Written 2026-08-06, when the NVARC port was finished and validated.
 > Companions: [research.md](research.md) (technical landscape), [materials.md](materials.md)
 > (what to study), [submission/README.md](submission/README.md) (how the port works).
