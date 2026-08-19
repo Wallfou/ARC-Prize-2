@@ -140,6 +140,13 @@ DFS_BUDGET_S = float(os.environ.get("ARC_DFS_BUDGET_S", 540))
 
 NUM_WORKERS = int(os.environ.get("ARC_NUM_WORKERS", 4))  # one per L4
 
+# NVARC ran with gradient checkpointing OFF -- they had memory to spare on an L4.
+# The 4B is ~2.6x the 2B's parameters and we lack flash-attn, so headroom is
+# thinner. Checkpointing is numerically identical, just recomputes activations
+# instead of storing them: roughly 30% slower for a large memory saving. Flip to
+# "1" if a run OOMs; we have hours of unused budget to pay for it.
+GRAD_CKPT = os.environ.get("ARC_GRAD_CKPT", "0") == "1"
+
 _START = time.time()
 
 

@@ -154,6 +154,7 @@ def build(model_slug, out_path):
             "#            baseline on this split is 25/120 for the 2B, 30/120 for 4B.\n"
             'os.environ["ARC_TASK_SET"] = "test"   # "eval" scores the public split\n'
             'os.environ["ARC_TASK_LIMIT"] = "0"   # >0 samples the split\n'
+            'os.environ["ARC_GRAD_CKPT"] = "0"    # "1" if the 4B OOMs\n'
             'print("start", time.strftime("%H:%M:%S"), "| set",'
             ' os.environ["ARC_TASK_SET"])'
         ),
@@ -315,7 +316,7 @@ def write_kernel_metadata(model_slug, notebook_path, version="1"):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--model", default="qwen3_2b_grids15_sft141",
+    p.add_argument("--model", default="qwen3_4b_grids15_sft139",
                    help="qwen3_2b_grids15_sft141 (6h, ~22%%) "
                         "or qwen3_4b_grids15_sft139 (12h, ~30%%)")
     p.add_argument("--out", default=os.path.join(HERE, "arc2_nvarc.ipynb"))

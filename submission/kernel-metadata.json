@@ -15,6 +15,6 @@
     "wallfou/arc2-wheelhouse"
   ],
   "model_sources": [
-    "sorokin/qwen3_2b_grids15_sft141/transformers/bfloat16/1"
+    "sorokin/qwen3_4b_grids15_sft139/transformers/bfloat16/1"
   ]
 }

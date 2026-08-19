@@ -358,7 +358,7 @@ def worker(rank, queue, end_time):
         lora_alpha=32,
         lora_dropout=0.0,
         bias="none",
-        use_gradient_checkpointing=False,
+        use_gradient_checkpointing=arc_config.GRAD_CKPT,
         random_state=42,
         use_rslora=True,
         loftq_config=None,
@@ -387,7 +387,7 @@ def worker(rank, queue, end_time):
         fsdp="",
         ddp_find_unused_parameters=False,
         dataloader_num_workers=0,
-        gradient_checkpointing=False,
+        gradient_checkpointing=arc_config.GRAD_CKPT,
     )
 
     max_seq_length = 8192
@@ -397,7 +397,7 @@ def worker(rank, queue, end_time):
         full_finetuning=False,
         load_in_4bit=False,
         local_files_only=True,
-        use_gradient_checkpointing=False,
+        use_gradient_checkpointing=arc_config.GRAD_CKPT,
         max_seq_length=max_seq_length,
     )
 
