@@ -6,6 +6,7 @@ import arc_config
 
 import gc
 import os
+import traceback
 import io
 import time
 import torch
@@ -439,6 +440,7 @@ def worker(rank, queue, end_time):
 
     worker_start = time.time()
     num_done = 0
+    num_failed = 0
 
     while not queue.empty():
 
@@ -450,197 +452,213 @@ def worker(rank, queue, end_time):
         if key is None:
             break
 
-        start_time = time.time()
+        # One bad puzzle must not take the run with it. Inference memory
+        # scales with sequence length and the 4B sits close to the L4 ceiling
+        # on the longest inputs, so an OOM here is plausible. Losing one task
+        # costs a fraction of a point; losing the run costs a submission day.
+        try:
+            start_time = time.time()
         
-        torch.cuda.reset_peak_memory_stats()
+            torch.cuda.reset_peak_memory_stats()
 
-        load_result = set_peft_model_state_dict(
-            model,
-            default_weights.copy(),
-            adapter_name="default",
-        )
-
-        model = FastLanguageModel.for_training(model)
-
-        puzzle_ds = arc_test_set.change_keys([key])
-
-        train_ds = puzzle_ds.augment(n=16, shfl_keys=True, seed=1)
-        train_ds = train_ds.cut_to_len(formatter=formatter, name="text", max_len=max_seq_length)
-
-        # One-off check that the completion-only collator still masks correctly.
-        # If transformers changed DataCollatorForLanguageModeling under us, every
-        # label could come back -100, and a loss over zero targets is NaN -- which
-        # looks identical to an exploding-gradient NaN in the training stats.
-        if num_done == 0:
-            try:
-                probe = [{"input_ids": tokenizer.encode(s["text"])}
-                         for s in train_ds.as_list(formatter)[:2]]
-                b = collator(probe)
-                n_lab = int((b["labels"] != -100).sum())
-                n_tok = int(b["labels"].numel())
-                print(f"[Rank {rank}] collator check: {n_lab}/{n_tok} tokens "
-                      f"supervised ({100 * n_lab / max(n_tok, 1):.1f}%)")
-                if n_lab == 0:
-                    print(f"[Rank {rank}] !!! collator masks EVERYTHING -- "
-                          f"loss will be NaN regardless of the model")
-            except Exception as e:
-                print(f"[Rank {rank}] collator check failed: {type(e).__name__}: {e}")
-
-        with io.StringIO() as buf, redirect_stdout(buf), redirect_stderr(buf):
-            
-            trainer = UnslothFixedTrainer(
-                model=model,
-                tokenizer=tokenizer,
-                data_collator=collator,
-                train_dataset=Dataset.from_list(train_ds.as_list(formatter)),
-                dataset_text_field="text",
-                max_seq_length=max_seq_length,
-                args=UnslothTrainingArguments(**train_args),
+            load_result = set_peft_model_state_dict(
+                model,
+                default_weights.copy(),
+                adapter_name="default",
             )
 
-            stats = trainer.train()
+            model = FastLanguageModel.for_training(model)
 
-            model = trainer.accelerator.unwrap_model(model, keep_fp32_wrapper=False)
+            puzzle_ds = arc_test_set.change_keys([key])
 
-            del trainer
+            train_ds = puzzle_ds.augment(n=16, shfl_keys=True, seed=1)
+            train_ds = train_ds.cut_to_len(formatter=formatter, name="text", max_len=max_seq_length)
 
-        model = FastLanguageModel.for_inference(model)
-        
-        gc.collect()
-        torch.cuda.empty_cache()
+            # One-off check that the completion-only collator still masks correctly.
+            # If transformers changed DataCollatorForLanguageModeling under us, every
+            # label could come back -100, and a loss over zero targets is NaN -- which
+            # looks identical to an exploding-gradient NaN in the training stats.
+            if num_done == 0:
+                try:
+                    probe = [{"input_ids": tokenizer.encode(s["text"])}
+                             for s in train_ds.as_list(formatter)[:2]]
+                    b = collator(probe)
+                    n_lab = int((b["labels"] != -100).sum())
+                    n_tok = int(b["labels"].numel())
+                    print(f"[Rank {rank}] collator check: {n_lab}/{n_tok} tokens "
+                          f"supervised ({100 * n_lab / max(n_tok, 1):.1f}%)")
+                    if n_lab == 0:
+                        print(f"[Rank {rank}] !!! collator masks EVERYTHING -- "
+                              f"loss will be NaN regardless of the model")
+                except Exception as e:
+                    print(f"[Rank {rank}] collator check failed: {type(e).__name__}: {e}")
+
+            with io.StringIO() as buf, redirect_stdout(buf), redirect_stderr(buf):
             
-        memory_allocated = torch.cuda.max_memory_allocated() // 1024**2
-        print(f"[Rank {rank}] allocated {memory_allocated}MB for training")
+                trainer = UnslothFixedTrainer(
+                    model=model,
+                    tokenizer=tokenizer,
+                    data_collator=collator,
+                    train_dataset=Dataset.from_list(train_ds.as_list(formatter)),
+                    dataset_text_field="text",
+                    max_seq_length=max_seq_length,
+                    args=UnslothTrainingArguments(**train_args),
+                )
 
-        torch.cuda.reset_peak_memory_stats()
+                stats = trainer.train()
+
+                model = trainer.accelerator.unwrap_model(model, keep_fp32_wrapper=False)
+
+                del trainer
+
+            model = FastLanguageModel.for_inference(model)
         
-        print(f"[Rank {rank}] training stats for puzzle {key}: {stats}")
+            gc.collect()
+            torch.cuda.empty_cache()
+            
+            memory_allocated = torch.cuda.max_memory_allocated() // 1024**2
+            print(f"[Rank {rank}] allocated {memory_allocated}MB for training")
 
-        # A NaN loss means test-time fine-tuning learned nothing for this puzzle.
-        # The run still completes and still emits candidates, so this would be
-        # invisible without saying it out loud.
-        loss = stats.metrics.get("train_loss") if hasattr(stats, "metrics") else None
-        if loss is None or loss != loss:
-            print(f"[Rank {rank}] !!! NaN training loss on {key} -- TTFT is not "
-                  f"adapting the model; predictions are effectively untrained")
+            torch.cuda.reset_peak_memory_stats()
+        
+            print(f"[Rank {rank}] training stats for puzzle {key}: {stats}")
 
-        puzzle_ds_multi = puzzle_ds.split_multi_replies()
+            # A NaN loss means test-time fine-tuning learned nothing for this puzzle.
+            # The run still completes and still emits candidates, so this would be
+            # invisible without saying it out loud.
+            loss = stats.metrics.get("train_loss") if hasattr(stats, "metrics") else None
+            if loss is None or loss != loss:
+                print(f"[Rank {rank}] !!! NaN training loss on {key} -- TTFT is not "
+                      f"adapting the model; predictions are effectively untrained")
 
-        eval_ds = puzzle_ds_multi.augment(n=2, seed=2)
-        eval_ds = eval_ds.cut_to_len(formatter=formatter, name="input", max_len=max_seq_length-max_new_tokens)
+            puzzle_ds_multi = puzzle_ds.split_multi_replies()
 
-        test_id_to_subkeys = defaultdict(list)
-        for subkey in sorted(eval_ds.keys):
-            test_id = subkey.split(".")[0].split("_")[1]
-            test_id_to_subkeys[test_id].append(subkey)
+            eval_ds = puzzle_ds_multi.augment(n=2, seed=2)
+            eval_ds = eval_ds.cut_to_len(formatter=formatter, name="input", max_len=max_seq_length-max_new_tokens)
 
-        batches = []
-        for test_id, subkeys in test_id_to_subkeys.items():
-            # 0: permute x 2
-            # 4: rot90.rot90.permute x 2
-            batch = []
-            for offset in [0, 4]:
-                batch.extend(subkeys[offset:offset+2])
-            batches.append(batch)
-            # 2: permute.rot90 x 2
-            # 6: rot90.rot90.rot90.permute x 2
-            batch = []
-            for offset in [2, 6]:
-                batch.extend(subkeys[offset:offset+2])
-            batches.append(batch)
-        for test_id, subkeys in test_id_to_subkeys.items():
-            # 8: transpose.permute x 2
-            # 12: transpose.rot90.rot90.permute x 2
-            batch = []
-            for offset in [8, 12]:
-                batch.extend(subkeys[offset:offset+2])
-            batches.append(batch)
-            # 10: transpose.rot90.permute x 2
-            # 14: transpose.rot90.rot90.rot90.permute x 2
-            batch = []
-            for offset in [10, 14]:
-                batch.extend(subkeys[offset:offset+2])
-            batches.append(batch)
+            test_id_to_subkeys = defaultdict(list)
+            for subkey in sorted(eval_ds.keys):
+                test_id = subkey.split(".")[0].split("_")[1]
+                test_id_to_subkeys[test_id].append(subkey)
 
-        with torch.inference_mode():
+            batches = []
+            for test_id, subkeys in test_id_to_subkeys.items():
+                # 0: permute x 2
+                # 4: rot90.rot90.permute x 2
+                batch = []
+                for offset in [0, 4]:
+                    batch.extend(subkeys[offset:offset+2])
+                batches.append(batch)
+                # 2: permute.rot90 x 2
+                # 6: rot90.rot90.rot90.permute x 2
+                batch = []
+                for offset in [2, 6]:
+                    batch.extend(subkeys[offset:offset+2])
+                batches.append(batch)
+            for test_id, subkeys in test_id_to_subkeys.items():
+                # 8: transpose.permute x 2
+                # 12: transpose.rot90.rot90.permute x 2
+                batch = []
+                for offset in [8, 12]:
+                    batch.extend(subkeys[offset:offset+2])
+                batches.append(batch)
+                # 10: transpose.rot90.permute x 2
+                # 14: transpose.rot90.rot90.rot90.permute x 2
+                batch = []
+                for offset in [10, 14]:
+                    batch.extend(subkeys[offset:offset+2])
+                batches.append(batch)
+
+            with torch.inference_mode():
                 
-            known_scores = {}
+                known_scores = {}
 
-            for subkeys in batches:
+                for subkeys in batches:
 
-                spend_time = time.time() - start_time
-                if spend_time > arc_config.PUZZLE_BUDGET_S or time.time() > end_time:
-                    print(f"[Rank {rank}] timeout after {spend_time:.1f}s for puzzle {key}")
-                    break
+                    spend_time = time.time() - start_time
+                    if spend_time > arc_config.PUZZLE_BUDGET_S or time.time() > end_time:
+                        print(f"[Rank {rank}] timeout after {spend_time:.1f}s for puzzle {key}")
+                        break
 
-                print(f"[Rank {rank}] decoding {subkeys}")
+                    print(f"[Rank {rank}] decoding {subkeys}")
 
-                tokens = []
-                for subkey in subkeys:
-                    data = eval_ds.get(subkey, formatter)
-                    tokens.append(tokenizer.encode(data["input"]))
+                    tokens = []
+                    for subkey in subkeys:
+                        data = eval_ds.get(subkey, formatter)
+                        tokens.append(tokenizer.encode(data["input"]))
 
-                dfs_result = inference_turbo_dfs(model, tokens, max_new_tokens, max_score, end_time)
+                    dfs_result = inference_turbo_dfs(model, tokens, max_new_tokens, max_score, end_time)
 
-                for subkey_id, scored_beams in dfs_result:
+                    for subkey_id, scored_beams in dfs_result:
 
-                    subkey = subkeys[subkey_id]
-                    bk = subkey.split(".")[0]
-                    decoded_result = []
+                        subkey = subkeys[subkey_id]
+                        bk = subkey.split(".")[0]
+                        decoded_result = []
 
-                    for beam_score, tokens in scored_beams:
+                        for beam_score, tokens in scored_beams:
 
-                        array = formatter.convert_tokens_to_array(tokens)
-                        if array is None:
-                            continue
+                            array = formatter.convert_tokens_to_array(tokens)
+                            if array is None:
+                                continue
 
-                        solution = puzzle_ds_multi.invert_mod(array, subkey, inv_perm=True)
+                            solution = puzzle_ds_multi.invert_mod(array, subkey, inv_perm=True)
 
-                        grid_id = (bk, tuple(map(tuple, solution)))
+                            grid_id = (bk, tuple(map(tuple, solution)))
 
-                        if grid_id in known_scores:
-                            augmented_scores = known_scores[grid_id]
-                        else:
-                            print(f"[Rank {rank}] scoring {subkey} #{len(decoded_result)}")
-                            aug_dataset = ArcDataset(
-                                keys=[bk],
-                                queries={bk: puzzle_ds_multi.queries.get(bk)},
-                                replies={bk: [solution.tolist()]},
-                            )
-                            aug_dataset = aug_dataset.augment(seed=hash(bk) % 1024**2)
-                            aug_dataset = aug_dataset.cut_to_len(formatter=formatter, name="input", max_len=max_seq_length-max_new_tokens)
-                            aug_queries = []
-                            aug_answers = []
-                            for augmented_sample in aug_dataset.as_list(formatter):
-                                aug_queries.append(augmented_sample["input"])
-                                aug_answers.append(augmented_sample["reply"])
-                            augmented_scores1 = calc_scores(aug_queries[:4], aug_answers[:4], tokenizer, model)
-                            augmented_scores2 = calc_scores(aug_queries[4:], aug_answers[4:], tokenizer, model)
-                            augmented_scores = augmented_scores1 + augmented_scores2
-                            known_scores[grid_id] = augmented_scores
+                            if grid_id in known_scores:
+                                augmented_scores = known_scores[grid_id]
+                            else:
+                                print(f"[Rank {rank}] scoring {subkey} #{len(decoded_result)}")
+                                aug_dataset = ArcDataset(
+                                    keys=[bk],
+                                    queries={bk: puzzle_ds_multi.queries.get(bk)},
+                                    replies={bk: [solution.tolist()]},
+                                )
+                                aug_dataset = aug_dataset.augment(seed=hash(bk) % 1024**2)
+                                aug_dataset = aug_dataset.cut_to_len(formatter=formatter, name="input", max_len=max_seq_length-max_new_tokens)
+                                aug_queries = []
+                                aug_answers = []
+                                for augmented_sample in aug_dataset.as_list(formatter):
+                                    aug_queries.append(augmented_sample["input"])
+                                    aug_answers.append(augmented_sample["reply"])
+                                augmented_scores1 = calc_scores(aug_queries[:4], aug_answers[:4], tokenizer, model)
+                                augmented_scores2 = calc_scores(aug_queries[4:], aug_answers[4:], tokenizer, model)
+                                augmented_scores = augmented_scores1 + augmented_scores2
+                                known_scores[grid_id] = augmented_scores
                         
-                        decoded_result.append({
-                            "beam_score": beam_score,
-                            "score_aug": augmented_scores,
-                            "solution": solution,
-                        })
+                            decoded_result.append({
+                                "beam_score": beam_score,
+                                "score_aug": augmented_scores,
+                                "solution": solution,
+                            })
 
-                    if len(decoded_result):
-                        with bz2.BZ2File(os.path.join(dir_outputs, subkey), "w") as f:
-                            pickle.dump(decoded_result, f)
+                        if len(decoded_result):
+                            with bz2.BZ2File(os.path.join(dir_outputs, subkey), "w") as f:
+                                pickle.dump(decoded_result, f)
 
-        memory_allocated = torch.cuda.max_memory_allocated() // 1024**2
-        print(f"[Rank {rank}] allocated {memory_allocated}MB for inference")
+            memory_allocated = torch.cuda.max_memory_allocated() // 1024**2
+            print(f"[Rank {rank}] allocated {memory_allocated}MB for inference")
 
-        spend_time = time.time() - start_time
-        num_done += 1
+            spend_time = time.time() - start_time
+            num_done += 1
 
-        # Pace check. 240 tasks over NUM_WORKERS must clear the deadline; at
-        # NVARC's 1200s ceiling they would not, so watch the running average.
-        avg = (time.time() - worker_start) / num_done
-        affordable = max(0, int((end_time - time.time()) / avg)) if avg > 0 else 0
-        print(
-            f"[Rank {rank}] finished {key} in {spend_time:.1f}s "
-            f"| done={num_done} avg={avg:.1f}s "
-            f"| {affordable} more fit before deadline"
-        )
+            # Pace check. 240 tasks over NUM_WORKERS must clear the deadline; at
+            # NVARC's 1200s ceiling they would not, so watch the running average.
+            avg = (time.time() - worker_start) / num_done
+            affordable = max(0, int((end_time - time.time()) / avg)) if avg > 0 else 0
+            print(
+                f"[Rank {rank}] finished {key} in {spend_time:.1f}s "
+                f"| done={num_done} avg={avg:.1f}s "
+                f"| {affordable} more fit before deadline"
+            )
+        except Exception as e:
+            num_failed += 1
+            oom = "out of memory" in str(e).lower()
+            print(f"[Rank {rank}] {'OOM' if oom else type(e).__name__} on "
+                  f"{key} -- skipping ({num_failed} failed so far): {e}",
+                  flush=True)
+            if not oom:
+                traceback.print_exc()
+            gc.collect()
+            torch.cuda.empty_cache()
+            continue
