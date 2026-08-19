@@ -152,7 +152,7 @@ def build(model_slug, out_path):
             "#            the competition. A commit run then prints a real accuracy\n"
             "#            number and costs zero submissions. NVARC's published\n"
             "#            baseline on this split is 25/120 for the 2B, 30/120 for 4B.\n"
-            'os.environ["ARC_TASK_SET"] = "test"\n'
+            'os.environ["ARC_TASK_SET"] = "eval"   # <- "test" before submitting\n'
             'os.environ["ARC_TASK_LIMIT"] = "0"   # >0 samples the split\n'
             'print("start", time.strftime("%H:%M:%S"), "| set",'
             ' os.environ["ARC_TASK_SET"])'

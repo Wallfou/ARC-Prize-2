@@ -100,6 +100,40 @@ def init_vocab(tokenizer, rank=0):
         print(f"[Rank {rank}] vocab probe failed: {type(e).__name__}: {e}")
 
 
+def load_fast_tokenizer(model_path, fallback, rank=0):
+    """Load the checkpoint's tokenizer through the fast (tokenizers) backend.
+
+    The checkpoint ships a 16-token WordLevel vocabulary in tokenizer.json, but
+    its tokenizer_config.json declares `tokenizer_class: Qwen2Tokenizer`. Under
+    transformers 5.x AutoTokenizer honours that and returns the *slow* BPE class,
+    which rebuilds itself from vocab.json plus merges.txt. There is no merges.txt,
+    so it cannot form the words `user` and `assistant` and drops them outright --
+    no error, just missing tokens. The model was trained with those words present,
+    so every prompt we sent was off-distribution.
+
+    NVARC's transformers 4.55 defaulted to the fast class and never hit this.
+    Loading PreTrainedTokenizerFast explicitly restores the intended behaviour.
+    """
+    probe = "<|im_start|>user\n1<|im_end|><|im_start|>assistant\n2<|im_end|>"
+    try:
+        from transformers import PreTrainedTokenizerFast
+        fast = PreTrainedTokenizerFast.from_pretrained(model_path)
+        if fast.pad_token_id is None:
+            fast.pad_token = "<|endoftext|>"
+        ids = fast.encode(probe)
+        roles = {fast.convert_tokens_to_ids("user"),
+                 fast.convert_tokens_to_ids("assistant")}
+        if not roles.issubset(set(ids)):
+            print(f"[Rank {rank}] fast tokenizer still drops role words {ids}; "
+                  f"keeping the original")
+            return fallback
+        print(f"[Rank {rank}] fast tokenizer OK: {type(fast).__name__} probe={ids}")
+        return fast
+    except Exception as e:
+        print(f"[Rank {rank}] fast tokenizer load failed: {type(e).__name__}: {e}")
+        return fallback
+
+
 def diagnose_tokenizer(tokenizer, rank=0):
     """Two checks that would otherwise fail silently and cost a submission.
 
@@ -366,6 +400,8 @@ def worker(rank, queue, end_time):
         use_gradient_checkpointing=False,
         max_seq_length=max_seq_length,
     )
+
+    tokenizer = load_fast_tokenizer(arc_config.model_path(), tokenizer, rank)
 
     init_vocab(tokenizer, rank)
     diagnose_tokenizer(tokenizer, rank)
