@@ -287,10 +287,18 @@ def check_end_to_end(data_dir):
         check("planted correct answers score exactly", abs(score - len(winners)) < 1e-6,
               f"scored {score:.2f}, expected {len(winners)}.00")
 
+        # A puzzle the solver never answered must still emit two *usable*
+        # guesses. [[0]] is a 1x1 grid of zeros and essentially never correct,
+        # so fill_wasted_attempts replaces it with the test input.
         untouched = sorted(ev)[20]
+        got = reloaded[untouched][0]
         check("task with no candidates still emits both attempts",
-              reloaded[untouched][0]["attempt_1"] == [[0]]
-              and reloaded[untouched][0]["attempt_2"] == [[0]])
+              "attempt_1" in got and "attempt_2" in got)
+        check("unanswered task does not waste attempts on [[0]]",
+              got["attempt_1"] != [[0]] and got["attempt_2"] != [[0]],
+              f"attempt_1={str(got['attempt_1'])[:40]}")
+        check("unanswered task falls back to the test input",
+              got["attempt_1"] == ev[untouched]["test"][0]["input"])
     finally:
         arc_config.OUTPUT_DIR, arc_config.SUBMISSION_PATH = real_out, real_sub
         shutil.rmtree(tmp, ignore_errors=True)

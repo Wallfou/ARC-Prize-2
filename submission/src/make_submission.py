@@ -83,6 +83,33 @@ def validate_format(submission, challenges):
     return problems
 
 
+PLACEHOLDER = [[0]]
+
+
+def fill_wasted_attempts(submission, challenges):
+    """Replace leftover [[0]] guesses with the test input grid.
+
+    fill_submission only writes as many attempts as it has distinct candidates,
+    so a puzzle that produced one grid leaves attempt_2 as [[0]], and one that
+    produced none leaves both. [[0]] is a 1x1 grid of zeros and essentially
+    never correct, so anything legal is better. Returns how many it replaced.
+    """
+    filled = 0
+    for key, task in challenges.items():
+        entry = submission.get(key)
+        if not entry:
+            continue
+        for i, attempts in enumerate(entry):
+            if i >= len(task["test"]):
+                continue
+            fallback = task["test"][i]["input"]
+            for name in ("attempt_1", "attempt_2"):
+                if attempts.get(name) == PLACEHOLDER:
+                    attempts[name] = fallback
+                    filled += 1
+    return filled
+
+
 def build(selector="kgmon", challenges_path=None, solutions_path=None, out_path=None):
     challenges_path = challenges_path or arc_config.CHALLENGES
     solutions_path = solutions_path or arc_config.SOLUTIONS
@@ -100,6 +127,11 @@ def build(selector="kgmon", challenges_path=None, solutions_path=None, out_path=
 
     with open(challenges_path) as f:
         challenges = json.load(f)
+
+    filled = fill_wasted_attempts(submission, challenges)
+    if filled:
+        print(f"*** Replaced {filled} placeholder [[0]] attempts with the test input")
+
     problems = validate_format(submission, challenges)
     if problems:
         print(f"!!! {len(problems)} FORMAT PROBLEMS")

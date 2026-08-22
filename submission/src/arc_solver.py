@@ -6,6 +6,8 @@ import arc_config
 
 import gc
 import os
+import json
+import sys
 import traceback
 import io
 import time
@@ -27,6 +29,15 @@ import bz2
 import pickle
 
 logging.disable(logging.WARNING)
+
+# turbo_dfs recurses once per generated token, and max_new_tokens is 931 for a
+# full 30x30 grid, against CPython's default limit of 1000. Whether it actually
+# overflows depends on ambient stack depth, so this is insurance rather than a
+# known fix -- but a RecursionError is now swallowed by the per-task guard,
+# which would silently drop exactly the confident full-size answers we want.
+# Only turbo_dfs frames accumulate (each model() call returns before recursing),
+# so a higher limit costs nothing.
+sys.setrecursionlimit(max(sys.getrecursionlimit(), 4000))
 
 ARC_VOCAB = {
     "0": 0,
@@ -99,6 +110,18 @@ def init_vocab(tokenizer, rank=0):
                   f"will be masked (NaN loss)")
     except Exception as e:
         print(f"[Rank {rank}] vocab probe failed: {type(e).__name__}: {e}")
+
+
+def record(rank, **fields):
+    """Append one JSON line of per-puzzle facts. One file per rank, so the four
+    workers never interleave writes."""
+    try:
+        os.makedirs(arc_config.RUN_LOG_DIR, exist_ok=True)
+        path = os.path.join(arc_config.RUN_LOG_DIR, f"rank{rank}.jsonl")
+        with open(path, "a") as f:
+            f.write(json.dumps(fields, default=str) + "\n")
+    except Exception:
+        pass          # telemetry must never take down a run
 
 
 def load_fast_tokenizer(model_path, fallback, rank=0):
@@ -587,7 +610,26 @@ def worker(rank, queue, end_time):
                         data = eval_ds.get(subkey, formatter)
                         tokens.append(tokenizer.encode(data["input"]))
 
-                    dfs_result = inference_turbo_dfs(model, tokens, max_new_tokens, max_score, end_time)
+                    # The 4 views in a batch are chosen to share grid dimensions (a
+                    # view and its 180-degree partner), so lengths normally match.
+                    # They can still diverge when cut_to_len drops different demo
+                    # pairs from differently-shuffled views on an oversized puzzle.
+                    # Padding is not safe: turbo_dfs has no attention mask and takes
+                    # position_ids from input_ids.size(1), so pads would be attended
+                    # to and every position would shift. Group by length instead.
+                    by_len = defaultdict(list)
+                    for _i, _t in enumerate(tokens):
+                        by_len[len(_t)].append(_i)
+                    if len(by_len) > 1:
+                        print(f"[Rank {rank}] ragged batch {sorted(by_len)} -- "
+                              f"splitting into {len(by_len)} groups", flush=True)
+
+                    dfs_result = []
+                    for _idxs in by_len.values():
+                        for _local, _beams in inference_turbo_dfs(
+                                model, [tokens[_j] for _j in _idxs],
+                                max_new_tokens, max_score, end_time):
+                            dfs_result.append((_idxs[_local], _beams))
 
                     for subkey_id, scored_beams in dfs_result:
 
@@ -651,6 +693,11 @@ def worker(rank, queue, end_time):
                 f"| done={num_done} avg={avg:.1f}s "
                 f"| {affordable} more fit before deadline"
             )
+            record(rank, key=key, ok=True, seconds=round(spend_time, 1),
+                   train_mb=memory_allocated, done=num_done,
+                   avg_seconds=round(avg, 1), affordable=affordable,
+                   outputs=len(test_id_to_subkeys),
+                   task_set=arc_config.TASK_SET)
         except Exception as e:
             num_failed += 1
             oom = "out of memory" in str(e).lower()
@@ -659,6 +706,16 @@ def worker(rank, queue, end_time):
                   flush=True)
             if not oom:
                 traceback.print_exc()
+            record(rank, key=key, ok=False, error=type(e).__name__,
+                   oom=oom, message=str(e)[:300], num_failed=num_failed,
+                   task_set=arc_config.TASK_SET)
             gc.collect()
             torch.cuda.empty_cache()
             continue
+
+    # num_done / num_failed were previously only ever visible mid-log.
+    print(f"[Rank {rank}] summary: done={num_done} failed={num_failed} "
+          f"elapsed={(time.time() - worker_start) / 60:.1f}min", flush=True)
+    record(rank, summary=True, done=num_done, failed=num_failed,
+           elapsed_min=round((time.time() - worker_start) / 60, 1),
+           task_set=arc_config.TASK_SET)

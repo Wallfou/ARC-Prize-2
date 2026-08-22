@@ -193,6 +193,7 @@ def build(model_slug, out_path):
         "env = dict(os.environ, UNSLOTH_DISABLE_STATISTICS='1',\n"
         "           TRITON_PTXAS_PATH='/usr/local/cuda/bin/ptxas',\n"
         "           OMP_NUM_THREADS='12',\n"
+        "           PYTHONHASHSEED='0',\n"
         "           PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True')\n"
         "proc = subprocess.run(['python', 'starter.py', '--end-time', str(end_time)],\n"
         "                      env=env)\n"
@@ -201,13 +202,31 @@ def build(model_slug, out_path):
     ))
 
     cells.append(code(
-        "# Rank candidates and overwrite the fallback. Raises if the format is bad.\n"
-        "!python make_submission.py --selector kgmon\n"
+        "# Rank candidates and overwrite the fallback. A bare `!python` would\n"
+        "# discard the exit code, so a format failure would leave the all-[[0]]\n"
+        "# fallback on disk and look successful -- the same trap as cell 14.\n"
+        "rank = subprocess.run(['python', 'make_submission.py',\n"
+        "                       '--selector', 'kgmon'], env=env)\n"
+        "print('make_submission exit code:', rank.returncode)\n"
+        "assert rank.returncode == 0, 'make_submission failed; submission.json is still the fallback'\n"
         'print(f"total elapsed: {(time.time() - NOTEBOOK_START) / 3600:.2f}h")'
     ))
 
     cells.append(code(
-        "import json\n"
+        "import json, glob\n"
+        "# Per-puzzle records from the workers: timings, memory, failures.\n"
+        "recs = []\n"
+        "for f in sorted(glob.glob(arc_config.RUN_LOG_DIR + '/rank*.jsonl')):\n"
+        "    recs += [json.loads(l) for l in open(f)]\n"
+        "done = [r for r in recs if r.get('ok')]\n"
+        "fail = [r for r in recs if r.get('ok') is False]\n"
+        "if done:\n"
+        "    secs = sorted(r['seconds'] for r in done)\n"
+        "    print(f'{len(done)} solved | median {secs[len(secs)//2]:.0f}s '\n"
+        "          f'| max {secs[-1]:.0f}s | total {sum(secs)/3600:.2f} GPU-hours')\n"
+        "if fail:\n"
+        "    from collections import Counter\n"
+        "    print('failures:', Counter(r['error'] for r in fail).most_common())\n"
         "sub = json.load(open(arc_config.SUBMISSION_PATH))\n"
         "n_out = sum(len(v) for v in sub.values())\n"
         "solved = sum(1 for v in sub.values()\n"

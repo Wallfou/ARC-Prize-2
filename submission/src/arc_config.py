@@ -72,6 +72,23 @@ EVAL_SOLUTIONS = os.path.join(DATA_DIR, "arc-agi_evaluation_solutions.json")
 TASK_SET = os.environ.get("ARC_TASK_SET", "test")
 assert TASK_SET in ("test", "eval"), TASK_SET
 
+
+def is_rerun():
+    """True during the scored rerun against the 240 hidden tasks."""
+    return bool(os.environ.get("KAGGLE_IS_COMPETITION_RERUN"))
+
+
+# A notebook left in eval mode and then submitted would write a 120-key
+# submission, miss every hidden task id, and score 0.00 -- while
+# validate_format printed "Format OK" (it validates against the eval file) and
+# the solved-count guard passed. Silent zero. Force the scored path instead of
+# asserting, because an assert here fires before the fallback submission is
+# written, which would leave no submission at all.
+if TASK_SET != "test" and is_rerun():
+    print(f"!!! ARC_TASK_SET was '{TASK_SET}' on a scored rerun -- forcing "
+          f"'test'. An eval-mode submission scores 0.00 silently.")
+    TASK_SET = "test"
+
 CHALLENGES = TEST_CHALLENGES if TASK_SET == "test" else EVAL_CHALLENGES
 SOLUTIONS = None if TASK_SET == "test" else EVAL_SOLUTIONS
 
@@ -83,6 +100,11 @@ TASK_LIMIT = int(os.environ.get("ARC_TASK_LIMIT", 0))
 OUTPUT_DIR = os.path.join(WORK_DIR, "inference_outputs")
 WORKER_FLAG_DIR = os.path.join(WORK_DIR, "worker_flags")
 SUBMISSION_PATH = os.path.join(WORK_DIR, "submission.json")
+# One JSONL per worker: structured per-puzzle timings, memory and
+# failures. Retrievable for commit and eval runs (not for scored
+# reruns, whose only output is submission.json), and far easier to
+# analyse than regexing the log.
+RUN_LOG_DIR = os.path.join(WORK_DIR, "run_logs")
 
 
 def model_path():
@@ -111,16 +133,10 @@ def model_path():
 
 
 # --- Run mode ----------------------------------------------------------------
-def is_rerun():
-    """True during the scored rerun against the 240 hidden tasks.
-
-    On the interactive/commit run Kaggle supplies a placeholder
-    arc-agi_test_challenges.json. In 2026 that placeholder is 240 *training*
-    tasks (verified: 240/240 overlap with arc-agi_training_challenges.json,
-    0/240 with the evaluation set), so any score computed from it is
-    meaningless. Solve only a handful there to keep commits fast.
-    """
-    return bool(os.environ.get("KAGGLE_IS_COMPETITION_RERUN"))
+# is_rerun() is defined above, before the TASK_SET guard that depends on it.
+# On a commit run Kaggle ships a placeholder arc-agi_test_challenges.json that
+# is 240 *training* tasks (verified: 240/240 overlap with the training file,
+# 0/240 with the eval set), so any score from it is meaningless.
 
 
 # Tasks solved during a non-rerun commit, purely to exercise the pipeline.

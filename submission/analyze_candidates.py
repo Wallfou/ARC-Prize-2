@@ -48,6 +48,12 @@ def main():
                    default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                         os.pardir, "example",
                                         "arc-agi_evaluation_solutions.json"))
+    p.add_argument("--challenges",
+                   default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        os.pardir, "example",
+                                        "arc-agi_evaluation_challenges.json"),
+                   help="used to seed the denominator, so outputs that produced "
+                        "no candidate file at all are still counted")
     p.add_argument("--views", type=int, default=16,
                    help="augmented views decoded per output")
     p.add_argument("--batch", type=int, default=4, help="views per DFS batch")
@@ -56,10 +62,30 @@ def main():
     sol = json.load(open(a.solutions))
     cands, views = load(a.dir)
 
+    # An output whose search returned nothing writes no pickle, so iterating the
+    # candidate files alone silently drops it and flatters both rates. Enumerate
+    # every expected output instead.
+    expected = []
+    try:
+        ch = json.load(open(a.challenges))
+        expected = [f"{k}_{i}" for k, v in ch.items() for i in range(len(v["test"]))
+                    if k in sol]
+    except OSError:
+        print("(no challenges file; denominator taken from candidate files only)")
+    for base in expected:
+        cands.setdefault(base, [])
+        views.setdefault(base, [])
+
+    empty = sum(1 for b in cands if not cands[b])
+
     found, missed, ranks, miss_views = 0, 0, Counter(), []
     for base, entries in cands.items():
         task, idx = base.rsplit("_", 1)
         if task not in sol:
+            continue
+        if not entries:
+            missed += 1
+            miss_views.append(0)
             continue
         truth = np.array(sol[task][int(idx)])
 
@@ -82,6 +108,7 @@ def main():
         raise SystemExit("no outputs matched the solutions file")
 
     print(f"outputs analysed          : {total}")
+    print(f"  of which zero candidates: {empty}")
     print(f"correct grid generated    : {found} ({100*found/total:.1f}%)")
     print(f"never generated           : {missed} ({100*missed/total:.1f}%)"
           "   <- GENERATION gap")
