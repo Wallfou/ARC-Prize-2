@@ -128,9 +128,23 @@ def build(selector="kgmon", challenges_path=None, solutions_path=None, out_path=
     with open(challenges_path) as f:
         challenges = json.load(f)
 
+    # Count real answers BEFORE backfilling. Once placeholders are replaced,
+    # "attempt_1 != [[0]]" no longer distinguishes a solved puzzle from an
+    # unsolved one, which would blind the dead-solver guard in the last cell.
+    n_answered = len(decoder.decoded_results)
+    try:
+        side = os.path.join(os.path.dirname(os.path.abspath(out_path)),
+                            "answered.json")
+        with open(side, "w") as f:
+            json.dump({"answered_outputs": n_answered,
+                       "total_outputs": sum(len(v) for v in submission.values())}, f)
+    except OSError as e:
+        print(f"*** could not write answered.json ({e}); guard will fall back")
+
     filled = fill_wasted_attempts(submission, challenges)
     if filled:
         print(f"*** Replaced {filled} placeholder [[0]] attempts with the test input")
+    print(f"*** Outputs answered by the solver: {n_answered}")
 
     problems = validate_format(submission, challenges)
     if problems:

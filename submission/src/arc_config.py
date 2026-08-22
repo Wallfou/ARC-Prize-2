@@ -163,6 +163,10 @@ NUM_WORKERS = int(os.environ.get("ARC_NUM_WORKERS", 4))  # one per L4
 # "1" if a run OOMs; we have hours of unused budget to pay for it.
 GRAD_CKPT = os.environ.get("ARC_GRAD_CKPT", "0") == "1"
 
+# One-off decoder correctness probe. Costs one puzzle's worth of extra
+# decoding on rank 0, so keep it off for scoring runs.
+PROBE_DFS = os.environ.get("ARC_PROBE_DFS", "0") == "1"
+
 _START = time.time()
 
 

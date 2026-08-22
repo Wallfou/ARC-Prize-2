@@ -158,6 +158,8 @@ def build(model_slug, out_path):
             '# of real tasks are longer (max 8390). Costs ~30% time, which\n'
             '# the budget has. Set "0" only if you have measured headroom.\n'
             'os.environ["ARC_GRAD_CKPT"] = "1"\n'
+            '# One-off decoder correctness check; costs ~1 puzzle. Off for scoring.\n'
+            'os.environ["ARC_PROBE_DFS"] = "1"\n'
             'print("start", time.strftime("%H:%M:%S"), "| set",'
             ' os.environ["ARC_TASK_SET"])'
         ),
@@ -229,8 +231,13 @@ def build(model_slug, out_path):
         "    print('failures:', Counter(r['error'] for r in fail).most_common())\n"
         "sub = json.load(open(arc_config.SUBMISSION_PATH))\n"
         "n_out = sum(len(v) for v in sub.values())\n"
-        "solved = sum(1 for v in sub.values()\n"
-        "             for a in v if a['attempt_1'] != [[0]])\n"
+        "# Placeholders are backfilled with the test input, so scanning for\n"
+        "# [[0]] no longer detects an unsolved puzzle. Use the count the\n"
+        "# aggregator recorded before backfilling.\n"
+        "import os\n"
+        "_side = os.path.join(os.path.dirname(arc_config.SUBMISSION_PATH), 'answered.json')\n"
+        "solved = (json.load(open(_side))['answered_outputs'] if os.path.exists(_side)\n"
+        "          else sum(1 for v in sub.values() for a in v if a['attempt_1'] != [[0]]))\n"
         "print(f'{len(sub)} tasks, {n_out} outputs, {solved} with a real prediction')\n"
         "print('solver exit code:', SOLVER_RC)\n"
         "\n"

@@ -112,6 +112,107 @@ def init_vocab(tokenizer, rank=0):
         print(f"[Rank {rank}] vocab probe failed: {type(e).__name__}: {e}")
 
 
+def probe_decoder(model, formatter, tokens, max_new_tokens, max_score,
+                  end_time, rank=0):
+    """Decide which of two decoder defects is live. Opt-in via ARC_PROBE_DFS=1.
+
+    turbo_dfs explores siblings by re-calling the model at the SAME position
+    with the SAME cache object. That is only correct if the cache overwrites at
+    position_ids. Two possibilities:
+
+      * HF DynamicCache -- update() is torch.cat(...), an unconditional append
+        that ignores position_ids. Siblings then see abandoned branches in their
+        KV history and every score after the first is wrong.
+      * unsloth's Qwen3Attention_fast_forward_inference -- a static paged buffer
+        indexed by position_ids, which overwrites correctly. But NVARC's
+        qwen3.patch (which we skip, having no flash-attn) also reshapes temp_O
+        from (1, bsz, h) to (bsz, 1, h); unpatched, that buffer is wrong for our
+        batch of 4 views.
+
+    Test 1 distinguishes them. Test 2 is the one that matters either way: if
+    batched decoding disagrees with a bsz=1 loop over the same views, the batch
+    path is broken regardless of cause.
+    """
+    import torch as _t
+
+    print(f"[Rank {rank}] === DFS PROBE ===", flush=True)
+
+    # --- Test 1: cache identity and growth across a simulated backtrack ---
+    try:
+        with _t.inference_mode():
+            ids = _t.tensor([tokens[0]], device=model.device, dtype=_t.long)
+            out = model(input_ids=ids, return_dict=True, use_cache=True)
+            cache = out.past_key_values
+            pos = ids.size(1)
+
+            def seqlen(c):
+                for attr in ("get_seq_length",):
+                    if hasattr(c, attr):
+                        try:
+                            return int(getattr(c, attr)())
+                        except Exception:
+                            pass
+                return -1
+
+            lens = [seqlen(cache)]
+            cur = cache
+            for tok in (0, 1):      # two siblings, same position
+                o = model(input_ids=_t.tensor([[tok]], device=model.device,
+                                              dtype=_t.long),
+                          position_ids=_t.full((1, 1), pos, device=model.device),
+                          past_key_values=cur, return_dict=True, use_cache=True)
+                cur = o.past_key_values
+                lens.append(seqlen(cur))
+
+        print(f"[Rank {rank}] cache class : {type(cache).__name__}")
+        print(f"[Rank {rank}] kv lengths  : {lens}  (prompt, sibling1, sibling2)")
+        if lens[1] > 0 and lens[2] > lens[1]:
+            print(f"[Rank {rank}] !!! APPEND semantics: sibling 2 sees sibling 1. "
+                  f"DFS scores are corrupted after the first branch.")
+        elif lens[1] > 0 and lens[2] == lens[1]:
+            print(f"[Rank {rank}] OK: overwrite semantics, siblings independent.")
+        else:
+            print(f"[Rank {rank}] inconclusive (cache does not report a length)")
+    except Exception as e:
+        print(f"[Rank {rank}] test 1 failed: {type(e).__name__}: {e}")
+
+    # --- Test 2: batched decode vs one-at-a-time over the same views ---
+    try:
+        def grids(res, n):
+            out = {i: set() for i in range(n)}
+            for i, beams in res:
+                for _score, toks in beams:
+                    arr = formatter.convert_tokens_to_array(toks)
+                    if arr is not None:
+                        out[i].add(tuple(map(tuple, arr)))
+            return out
+
+        n = len(tokens)
+        batched = grids(inference_turbo_dfs(model, tokens, max_new_tokens,
+                                            max_score, end_time), n)
+        single = {}
+        for i, t in enumerate(tokens):
+            single[i] = grids(inference_turbo_dfs(model, [t], max_new_tokens,
+                                                 max_score, end_time), 1)[0]
+
+        agree = sum(batched[i] == single[i] for i in range(n))
+        print(f"[Rank {rank}] batched vs bsz=1 : {agree}/{n} views identical")
+        for i in range(n):
+            if batched[i] != single[i]:
+                print(f"[Rank {rank}]   view {i}: batched {len(batched[i])} grids, "
+                      f"single {len(single[i])}, "
+                      f"shared {len(batched[i] & single[i])}")
+        if agree != n:
+            print(f"[Rank {rank}] !!! BATCHED DECODE DISAGREES -- the batch path "
+                  f"is wrong; decode one view at a time until fixed.")
+        else:
+            print(f"[Rank {rank}] OK: batching is faithful.")
+    except Exception as e:
+        print(f"[Rank {rank}] test 2 failed: {type(e).__name__}: {e}")
+
+    print(f"[Rank {rank}] === END PROBE ===", flush=True)
+
+
 def record(rank, **fields):
     """Append one JSON line of per-puzzle facts. One file per rank, so the four
     workers never interleave writes."""
@@ -464,6 +565,7 @@ def worker(rank, queue, end_time):
     worker_start = time.time()
     num_done = 0
     num_failed = 0
+    _probed = False
 
     while not queue.empty():
 
@@ -617,6 +719,13 @@ def worker(rank, queue, end_time):
                     # Padding is not safe: turbo_dfs has no attention mask and takes
                     # position_ids from input_ids.size(1), so pads would be attended
                     # to and every position would shift. Group by length instead.
+                    # One-off decoder probe (ARC_PROBE_DFS=1). Runs on rank 0's first
+                    # batch only, then never again, so it costs one puzzle's time.
+                    if arc_config.PROBE_DFS and rank == 0 and num_done == 0 and not _probed:
+                        _probed = True
+                        probe_decoder(model, formatter, tokens, max_new_tokens,
+                                      max_score, end_time, rank)
+
                     by_len = defaultdict(list)
                     for _i, _t in enumerate(tokens):
                         by_len[len(_t)].append(_i)
@@ -694,7 +803,7 @@ def worker(rank, queue, end_time):
                 f"| {affordable} more fit before deadline"
             )
             record(rank, key=key, ok=True, seconds=round(spend_time, 1),
-                   train_mb=memory_allocated, done=num_done,
+                   peak_infer_mb=memory_allocated, done=num_done,
                    avg_seconds=round(avg, 1), affordable=affordable,
                    outputs=len(test_id_to_subkeys),
                    task_set=arc_config.TASK_SET)
