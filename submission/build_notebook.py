@@ -159,7 +159,7 @@ def build(model_slug, out_path):
             '# the budget has. Set "0" only if you have measured headroom.\n'
             'os.environ["ARC_GRAD_CKPT"] = "1"\n'
             '# One-off decoder correctness check; costs ~1 puzzle. Off for scoring.\n'
-            'os.environ["ARC_PROBE_DFS"] = "1"\n'
+            'os.environ["ARC_PROBE_DFS"] = "0"\n'
             'print("start", time.strftime("%H:%M:%S"), "| set",'
             ' os.environ["ARC_TASK_SET"])'
         ),

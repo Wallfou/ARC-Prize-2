@@ -160,25 +160,46 @@ def probe_decoder(model, formatter, tokens, max_new_tokens, max_score,
                 except Exception:
                     return -1
 
-            lens = [seqlen(cache)]
-            cur = cache
-            for tok in (0, 1):      # two siblings, same position
-                o = model(input_ids=_t.tensor([[tok]], device=model.device,
-                                              dtype=_t.long),
-                          position_ids=_t.full((1, 1), pos, device=model.device),
-                          past_key_values=cur, return_dict=True, use_cache=True)
-                cur = o.past_key_values
-                lens.append(seqlen(cur))
+            # turbo_dfs hands the SAME cache object to every sibling and
+            # never rebinds it (see the `past_key_values=cache` call versus the
+            # `cache=outputs.past_key_values` recursion). So a chained cache
+            # growing proves nothing -- that is just descending the tree. The
+            # question is whether a forward pass MUTATES what it was given.
+            L0 = seqlen(cache)
+            a = model(input_ids=_t.tensor([[0]], device=model.device, dtype=_t.long),
+                      position_ids=_t.full((1, 1), pos, device=model.device),
+                      past_key_values=cache, return_dict=True, use_cache=True)
+            L_after = seqlen(cache)          # same object we passed in
+
+            # Sibling B, reusing that same cache exactly as turbo_dfs does.
+            b = model(input_ids=_t.tensor([[1]], device=model.device, dtype=_t.long),
+                      position_ids=_t.full((1, 1), pos, device=model.device),
+                      past_key_values=cache, return_dict=True, use_cache=True)
+
+            # Ground truth for B: a cache rebuilt from the prompt alone.
+            fresh = model(input_ids=ids, return_dict=True,
+                          use_cache=True).past_key_values
+            ref = model(input_ids=_t.tensor([[1]], device=model.device, dtype=_t.long),
+                        position_ids=_t.full((1, 1), pos, device=model.device),
+                        past_key_values=fresh, return_dict=True, use_cache=True)
+            same = bool(_t.allclose(b.logits.float(), ref.logits.float(),
+                                    atol=1e-3, rtol=1e-3))
+            drift = float((b.logits.float() - ref.logits.float()).abs().max())
 
         print(f"[Rank {rank}] cache class : {type(cache).__name__}")
-        print(f"[Rank {rank}] kv lengths  : {lens}  (prompt, sibling1, sibling2)")
-        if lens[1] > 0 and lens[2] > lens[1]:
-            print(f"[Rank {rank}] !!! APPEND semantics: sibling 2 sees sibling 1. "
-                  f"DFS scores are corrupted after the first branch.")
-        elif lens[1] > 0 and lens[2] == lens[1]:
-            print(f"[Rank {rank}] OK: overwrite semantics, siblings independent.")
+        print(f"[Rank {rank}] passed-in cache length before/after a forward: "
+              f"{L0} -> {L_after}")
+        if L_after > L0:
+            print(f"[Rank {rank}] !!! the forward pass MUTATED the cache it was "
+                  f"given; siblings after the first are corrupted")
         else:
-            print(f"[Rank {rank}] inconclusive (cache does not report a length)")
+            print(f"[Rank {rank}] OK: forward pass does not mutate the input "
+                  f"cache, so siblings start from the same prefix")
+        print(f"[Rank {rank}] sibling B matches a fresh-cache reference: {same} "
+              f"(max logit drift {drift:.2e})")
+        if not same:
+            print(f"[Rank {rank}] !!! sibling B is being scored against a "
+                  f"contaminated prefix")
     except Exception as e:
         print(f"[Rank {rank}] test 1 failed: {type(e).__name__}: {e}")
 
