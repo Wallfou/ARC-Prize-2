@@ -4,8 +4,8 @@
 >
 > Progression: **13.33% → 20.69% → 27.22%**, all from fixing bugs and swapping the
 > checkpoint, none from tuning. Three bugs found along the way (offline install,
-> NaN loss, malformed prompts) — full record in the Notion doc *Iteration 1 :
-> Notes* and in [notes/](notes/).
+> NaN loss, malformed prompts) — full record in the Notion docs *Iteration 1 : Notes*
+> and *Iteration 2 : Notes*.
 >
 > **The recreation is done.** What remains is tuning, and the gap is small:
 >
@@ -37,11 +37,13 @@
 ---
 
 > Written 2026-08-06, when the NVARC port was finished and validated.
-> Companions: [research.md](research.md) (technical landscape), [materials.md](materials.md)
-> (what to study), [submission/README.md](submission/README.md) (how the port works).
+> Companions: the Notion page *Background Reading & Technical Landscape*
+> (technique survey, reading list) and [submission/README.md](submission/README.md)
+> (how the port works).
 >
-> This supersedes research.md §8, which was written in June before the 2026
-> leaderboard was known.
+> This supersedes the strategy section of the old `research.md`, written in June
+> before the 2026 leaderboard was known. That doc now lives in Notion, with its
+> wrong calls marked.
 
 ---
 
@@ -189,10 +191,10 @@ it is public**.
 Two routes:
 
 1. **Newer base model, same recipe.** Qwen3-4B-Thinking-2507 dates from mid-2025.
-   Redo the 16-token vocabulary surgery ([cut_tokenizer.ipynb](NVARC/ARChitects/cut_tokenizer.ipynb)
+   Redo the 16-token vocabulary surgery ([cut_tokenizer.ipynb](https://github.com/1ytic/NVARC/blob/main/ARChitects/cut_tokenizer.ipynb)
    is ~10 lines of `index_select`) on a stronger 2026-era small model and SFT on
    the public 3.2M-sample mix. Plausibly the highest-leverage single change.
-2. **More/better synthetic data.** Extend the SDG pipeline ([SDG/](NVARC/SDG)).
+2. **More/better synthetic data.** Extend the SDG pipeline ([upstream SDG/](https://github.com/1ytic/NVARC/tree/main/SDG)).
    Its generator was `gpt-oss-120b`; 2026 open models are considerably better.
 
 **Cost estimate (unverified, from public rental pricing ~$2–3/H100-hr):** NVARC's
@@ -206,7 +208,7 @@ says what is actually broken.
 
 ### 2c. Ensemble a second, complementary solver (weeks, $0–low)
 
-[research.md](research.md) §5: induction and transduction solve *different* tasks
+The technique survey in Notion: induction and transduction solve *different* tasks
 — ensembling reached ~56% on ARC-AGI-1. Less proven on ARC-AGI-2, but the harness
 already supports injecting foreign candidates into the scoring pool (that is
 exactly how NVARC bolted on TRM).

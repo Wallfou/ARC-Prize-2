@@ -1,54 +1,40 @@
-# NVARC solution to ARC-AGI-2 2025
+# NVARC — reference material (not our code)
 
-This repository contains the code and instructions to replicate the NVARC submissions to the [Arc Prize 2025 competition on Kaggle](https://www.kaggle.com/competitions/arc-prize-2025).
+The ARC Prize 2025 winning solution by **Ivan Sorokin and Jean-François Puget**
+(NVIDIA). Upstream: <https://github.com/1ytic/NVARC>.
 
-The NVARC team includes Ivan Sorokin and Jean-Francois Puget, who are also members of the NVIDIA [KGMoN](https://www.nvidia.com/en-us/ai-data-science/kaggle-grandmasters) team.
+Our submission in [../submission/](../submission) is derived from this work.
+`submission/src/arc_loader.py` and `submission/src/arc_decoder.py` are
+byte-identical to theirs; `arc_solver.py` is theirs with a small diff. Credit
+for the method, the training pipeline and the published checkpoints is theirs.
 
-The solution is described in the [paper](nvarc_2025.pdf) and consists of three main components:
+## What is kept here, and why
 
-- Multi-stage synthetic data generation pipeline;
-- Improved version of the ARChitects solution that won the [ARC Prize competition in 2024](https://www.kaggle.com/competitions/arc-prize-2024);
-- Improved version of Tiny Recursive Models by Alexia Jolicoeur-Martineau.
+| File | Why |
+|---|---|
+| `nvarc_2025.pdf` | The paper. Cited constantly for hyperparameters, published scores, and the things they tried and rejected. |
+| `ARC-AGI1/002_ivan_arc1.ipynb` | The direct ancestor of our solver — the only public copy of the winning inference code. We diff against it whenever behaviour is in question. Outputs stripped (1.2 MB of progress bars); source intact. |
 
-## Synthetic Data Generation
+One number from those stripped outputs worth keeping: the same 4B pipeline scored
+**383/400 (95.75%)** on the ARC-AGI-1 2024 public evaluation set. That appears
+nowhere in the paper — which is itself a contamination signal, since 376 of the
+1,000 ARC-AGI-2 training tasks *are* ARC-AGI-1 public eval tasks.
 
-The scripts and prompts for Synthetic Data Generation pipeline can be found in [SDG](SDG) folder.
+## What was removed, and where to find it
 
-[NVARC Artifacts Puzzles](https://www.kaggle.com/datasets/sorokin/nvarc-artifacts-puzzles) dataset includes generated text used to construct the synthetic puzzles.
+Removed on 2026-08-23 because nothing in our pipeline reads it. All of it is
+still upstream, and still in this repo's git history.
 
-```bash
-kaggle datasets download -d sorokin/nvarc-artifacts-puzzles
-unzip nvarc-artifacts-puzzles.zip
-```
+| Removed | Contents | Get it from |
+|---|---|---|
+| `SDG/` | The synthetic-data pipeline: prompts and scripts that generated 103k puzzles | [upstream `SDG/`](https://github.com/1ytic/NVARC/tree/main/SDG) — only needed if we retrain |
+| `ARChitects/` | Supervised fine-tuning config and the 16-token tokeniser surgery | [upstream `ARChitects/`](https://github.com/1ytic/NVARC/tree/main/ARChitects) — the checkpoints ship the same tokeniser files |
+| `TRM/` | Tiny Recursive Model training | [upstream `TRM/`](https://github.com/1ytic/NVARC/tree/main/TRM) — dropped: their own numbers show it added nothing to the 4B (27.22 → 27.22) |
+| `ARC-AGI1/pip-install-…ipynb` | Package pins and the flash-attn patch | The patch itself is preserved at `submission/src/qwen3.patch`; the pins are in `submission/build_wheelhouse.py` |
+| `external/` | Empty submodule directories | Never populated |
 
-[NVARC Synthetic Puzzles](https://www.kaggle.com/datasets/sorokin/nvarc-synthetic-puzzles) dataset includes our 103k synthetic puzzles.
+## Published artifacts we actually use
 
-```bash
-kaggle datasets download -d sorokin/nvarc-synthetic-puzzles
-unzip nvarc-synthetic-puzzles.zip
-```
-
-[NVARC Augmented Puzzles](https://www.kaggle.com/datasets/sorokin/nvarc-augmented-puzzles) dataset includes few subsets with 3.2M augmented puzzles.
-
-```bash
-kaggle datasets download -d sorokin/nvarc-augmented-puzzles
-unzip nvarc-augmented-puzzles.zip
-```
-
-Visualization of synthetic puzzles shown in the Kaggle notebook [nvarc-viewer](https://www.kaggle.com/code/sorokin/nvarc-viewer).
-
-## The ARChitects
-
-The hyperparameters and fine-tuning scripts for the Qwen3 4B model are located in the [ARChitects](ARChitects) folder.
-
-The submission notebook is available on Kaggle [sorokin/arc2-qwen3-unsloth-flash-lora-batch4-queue](https://www.kaggle.com/code/sorokin/arc2-qwen3-unsloth-flash-lora-batch4-queue).
-
-## Tiny Recursive Models
-
-The scripts and instructions to train Tiny Recursive Models are in the [TRM](TRM) folder.
-
-The submission notebook is available on Kaggle [cpmpml/arc2-trm-v31](https://www.kaggle.com/code/cpmpml/arc2-trm-v31?scriptVersionId=278223801).
-
-## ARC AGI 2024
-
-We ran our winning solution on last year ARC AGI evaluation data. The code can be found in the [ARC-AGI1](ARC-AGI1) folder.
+- `sorokin/qwen3_4b_grids15_sft139` — 7.27 GB, Apache 2.0. The checkpoint we run.
+- `sorokin/qwen3_2b_grids15_sft141` — 2.82 GB, Apache 2.0. Smaller, faster variant.
+- `sorokin/nvarc-synthetic-puzzles`, `sorokin/nvarc-augmented-puzzles` — training data, **no licence stated**. Fine to train on privately; a problem to redistribute.
