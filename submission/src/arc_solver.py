@@ -602,7 +602,9 @@ def worker(rank, queue, end_time):
 
     max_new_tokens = formatter.max_new_tokens()
 
-    max_score = -np.log(0.2)
+    max_score = -np.log(arc_config.MIN_PROB)
+    print(f"[Rank {rank}] candidate floor: total probability > "
+          f"{arc_config.MIN_PROB} (max_score {max_score:.4f})", flush=True)
 
     arc_test_set = ArcDataset.from_file(arc_config.CHALLENGES)
 

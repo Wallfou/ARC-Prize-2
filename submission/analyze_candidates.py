@@ -57,7 +57,15 @@ def main():
     p.add_argument("--views", type=int, default=16,
                    help="augmented views decoded per output")
     p.add_argument("--batch", type=int, default=4, help="views per DFS batch")
+    p.add_argument("--sweep", action="store_true",
+                   help="reconstruct higher probability floors by filtering on "
+                        "beam_score, and report each. Only meaningful on a run "
+                        "whose floor was LOWER than the floors swept.")
     a = p.parse_args()
+
+    if a.sweep:
+        sweep(a.dir, a.solutions)
+        return
 
     sol = json.load(open(a.solutions))
     cands, views = load(a.dir)
@@ -132,6 +140,66 @@ def main():
               "   (consistent with a batch timeout)")
         print(f"   not a multiple            : {len(miss_views)-whole}"
               "   (threshold pruned single views)")
+
+
+def sweep(cand_dir, solutions, floors=(0.20, 0.15, 0.10, 0.05, 0.02)):
+    """Report generation recall and pass@2 at several probability floors.
+
+    A candidate's beam_score is the cumulative negative log-likelihood of the
+    whole grid, so `beam_score < -log(p)` is exactly "total probability > p".
+    Search only ever prunes, so a run at a low floor contains everything a
+    higher floor would have found: filtering reconstructs the higher arms
+    exactly, and one GPU run yields the entire curve.
+    """
+    import math
+    sol = json.load(open(solutions))
+    cands, _ = load(cand_dir)
+
+    run_floor = math.exp(-max(
+        (e["beam_score"] for es in cands.values() for e in es), default=0.0))
+    print(f"run's own floor, inferred from the widest candidate: "
+          f"~{run_floor:.3f}\n")
+
+    rows = []
+    for p_floor in floors:
+        # The widest observed candidate sits just under the true cut, so the
+        # inferred floor is slightly high. Allow a few percent of slack.
+        if p_floor < run_floor * 0.97:
+            rows.append((p_floor, None, None, None))     # cannot reconstruct
+            continue
+        cut = -math.log(p_floor)
+        found = top2 = total = 0
+        n_cand = []
+        for base, entries in cands.items():
+            task, idx = base.rsplit("_", 1)
+            if task not in sol:
+                continue
+            total += 1
+            kept = [e for e in entries if e["beam_score"] < cut]
+            by_grid = defaultdict(list)
+            for e in kept:
+                by_grid[tuple(map(tuple, e["solution"]))].append(e)
+            n_cand.append(len(by_grid))
+            truth = np.array(sol[task][int(idx)])
+            hit = [g for g in by_grid if np.array_equal(np.array(g), truth)]
+            if not hit:
+                continue
+            found += 1
+            order = sorted(by_grid, key=lambda g: -kgmon(by_grid[g]))
+            if hit[0] in order[:2]:
+                top2 += 1
+        rows.append((p_floor, found / total, top2 / total,
+                     float(np.mean(n_cand))))
+
+    print(f"{'floor':>7} {'generated':>10} {'pass@2':>8} {'cands/output':>13}")
+    for p_floor, gen, acc, nc in rows:
+        if gen is None:
+            print(f"{p_floor:>7.2f}   --- below the floor this run used ---")
+        else:
+            print(f"{p_floor:>7.2f} {100*gen:9.1f}% {100*acc:7.1f}% {nc:13.1f}")
+    print("\nGENERATED is the number to watch: it is the ceiling selection can "
+          "ever reach,\nand it counts events rather than pass/fail, so it moves "
+          "before the score does.")
 
 
 if __name__ == "__main__":

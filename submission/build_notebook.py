@@ -152,7 +152,7 @@ def build(model_slug, out_path):
             "#            the competition. A commit run then prints a real accuracy\n"
             "#            number and costs zero submissions. NVARC's published\n"
             "#            baseline on this split is 25/120 for the 2B, 30/120 for 4B.\n"
-            'os.environ["ARC_TASK_SET"] = "test"   # "eval" scores the public split\n'
+            'os.environ["ARC_TASK_SET"] = "eval"   # "test" before submitting\n'
             'os.environ["ARC_TASK_LIMIT"] = "0"   # >0 samples the split\n'
             '# ON for the 4B: peak was 16.9/22 GB on a 2334-token task, and 57%\n'
             '# of real tasks are longer (max 8390). Costs ~30% time, which\n'
@@ -160,6 +160,9 @@ def build(model_slug, out_path):
             'os.environ["ARC_GRAD_CKPT"] = "1"\n'
             '# One-off decoder correctness check; costs ~1 puzzle. Off for scoring.\n'
             'os.environ["ARC_PROBE_DFS"] = "0"\n'
+            '# Candidate floor. NVARC used 0.2. Run LOW and reconstruct higher\n'
+            '# floors offline by filtering on beam_score -- one run, whole sweep.\n'
+            'os.environ["ARC_MIN_PROB"] = "0.05"\n'
             'print("start", time.strftime("%H:%M:%S"), "| set",'
             ' os.environ["ARC_TASK_SET"])'
         ),

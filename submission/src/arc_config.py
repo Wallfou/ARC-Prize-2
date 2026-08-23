@@ -167,6 +167,17 @@ GRAD_CKPT = os.environ.get("ARC_GRAD_CKPT", "0") == "1"
 # decoding on rank 0, so keep it off for scoring runs.
 PROBE_DFS = os.environ.get("ARC_PROBE_DFS", "0") == "1"
 
+# Depth-first search keeps any completed grid whose TOTAL probability exceeds
+# this. NVARC used 0.2. Our failure analysis says this floor is what prunes the
+# search on the puzzles we get wrong: on failures a median of 9 of 16 augmented
+# views return nothing at all, and the shortfall is not divisible by the batch
+# size, so it is the floor rather than a timeout.
+#
+# Lowering it is strictly more search, so a low-floor run is a SUPERSET of a
+# high-floor one -- filter the saved candidates by beam_score afterwards to
+# reconstruct any higher floor offline. One run, whole sweep.
+MIN_PROB = float(os.environ.get("ARC_MIN_PROB", 0.2))
+
 _START = time.time()
 
 
