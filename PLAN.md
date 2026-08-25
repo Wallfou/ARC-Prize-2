@@ -1,47 +1,50 @@
 # ARC Prize 2026 — Iteration Plan
 
-> **Status 2026-08-23 — leaderboard 29.31% (v34), 71 days to the deadline.**
+> **Status 2026-08-25 — leaderboard 29.31% / 27.64% (same config, twice), 69 days left.**
 >
-> Progression: **13.33% → 20.69% → 27.22% → 29.31%**. Rank ~602 of 1594, up 200
-> places on the last submission. Full record in the Notion docs *Iteration 1 :
-> Notes* and *Iteration 2 : Notes*.
+> **Measured noise floor: 1.67 points on byte-identical code.** A single
+> submission cannot resolve anything under ~2pp. Treat the leaderboard as a
+> confirmation instrument, never as a measurement one; size effects offline,
+> where event counts give far more power.
 >
-> **The recreation is done.** 29.31% sits 0.41 from NVARC's own published 4B
-> figure of 29.72, inside the 1–2 point run-to-run variance. There is no
-> reproduction gap left against the paper.
+> Progression: 13.33% → 20.69% → 27.22% → 29.31%/27.64%. Rank ~602 of 1594.
+> Against the mean of the two v34 runs, the Tier 0 batch was worth ~1.3pp (not
+> the +2.09 a single sample suggested), and we sit ~1.2 below NVARC's published
+> 29.72 rather than 0.4. Full record in Notion, *Iteration 2 : Notes*.
 >
-> | Target | Score | Gap |
+> **Every cheap lever has now been tested and rejected:**
+>
+> | Lever | Verdict | Cost to learn |
 > |---|---|---|
-> | NVARC 4B, full 12h | 29.72 | +0.41 |
-> | Median working submission | 29.86 | +0.55 |
-> | Peak of the crowd cluster | 31.81 | +2.50 |
-> | 8th place (last paying) | 33.89 | +4.58 |
+> | Lower the probability floor | **Harmful** — 19.9h against an 11.6h budget, and pass@2 flat across all floors | 1 commit run |
+> | Length-normalised scoring | Worse (139 vs 144 of 151) | free, offline |
+> | Dual-selector attempts | No gain (144, unchanged) | free, offline |
+> | Four alternative rankers | All worse than the current one | free, offline |
 >
-> **What that reframes.** The public forks at 33.89 are 4.58 above NVARC's best
-> published number too, so they are not reproducing the paper better — they are
-> doing something it does not describe. The remaining gap is research, not a diff
-> against public code, and ~30% is the measured ceiling of this route.
+> **~30% is the measured ceiling of this recipe**, from several directions. 8th
+> place at 33.89 needs something the published method does not contain — better
+> training data, a better base model, or a different approach. Not a tuning change.
+>
+> **The one untested hypothesis:** the search may be *time*-limited rather than
+> recall-limited, in which case *raising* the floor above 0.2 trades exploration
+> depth for view coverage. One eval commit run at 0.3–0.4 settles it.
 >
 > **Corrections to what follows, learned the hard way:**
 >
 > | This plan said | Reality |
 > |---|---|
-> | Throughput is the binding constraint | It isn't. Runs finish in ~4–8h of 12, and that idle time is now the main lever. |
-> | Validate offline on the 120 public eval tasks | Saturated by contamination: 82.6% offline vs 29.31% on the leaderboard. Pre-flight check only. |
-> | The 2026 hidden set may have been refreshed | Ruled out — matching NVARC's number would not otherwise be possible. |
-> | A faithful recreation lands outside the money | Correct after all, for the wrong reason: the ceiling is the *recipe*, not the field. |
+> | Throughput is the binding constraint | True after all, but only once the search is widened. At the default floor there are 4–8h idle; at 0.05 it needs 20h. |
+> | Spend the idle budget on more search | Tested and harmful. The extra candidates are ones the model does not believe, and nothing ranks them. |
+> | Validate offline on the public eval split | Saturated for scoring, but its *event counts* are the only instrument with real power. Use recall, not accuracy. |
+> | Selection is where the points are | Not for us. The current ranker beat every alternative tried. |
 >
-> **Next, batched into one submission:** lower the 0.2 probability floor (our
-> measurement shows it pruning 9 of 16 views on failed puzzles); use the unused
-> second ranker for `attempt_2`; normalise candidate scores per token. Each is
-> worth 1–2 points at most, below what one submission can resolve, so they go
-> together.
->
-> **The parallel track is now the better bet.** Matching the reference caps this
-> route near 30%. The writeup award (\$275k, judged on Theory and Novelty as much
-> as Accuracy) and the Paper Track (\$450k, 150 participants vs 6,238 entrants,
-> \$375k of it a threshold prize not requiring a high score) are better expected
-> value — and two iterations of debugging notes are the material they judge.
+> **The parallel track is now the better bet**, and this is no longer a hedge:
+> the writeup award (\$275k, judged on Theory and Novelty as much as Accuracy)
+> and the Paper Track (\$450k, 150 participants vs 6,238 entrants, \$375k of it a
+> threshold prize not requiring a high score). Two iterations of notes now
+> contain a measured noise floor, four rejected levers with reasoning, three
+> silent-failure bugs, and a clean demonstration that the obvious lever is
+> actively harmful under a compute budget.
 
 ---
 

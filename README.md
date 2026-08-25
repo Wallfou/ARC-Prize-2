@@ -3,9 +3,9 @@
 Competition entry for [ARC Prize 2026](https://www.kaggle.com/competitions/arc-prize-2026-arc-agi-2).
 Final submission deadline **Nov 2, 2026**.
 
-**Current: 29.31% public leaderboard** (v34, 4B checkpoint). Progression
-13.33% → 20.69% → 27.22% → 29.31%, matching NVARC's published 29.72% for this
-checkpoint. Rank ~602 of 1594; the median working submission is 29.86.
+**Current: 29.31% / 27.64%** — same config twice, so the noise floor is 1.67pp. Progression
+13.33% → 20.69% → 27.22% → ~28.5% (mean). NVARC's published figure for this
+checkpoint is 29.72. Rank ~602 of 1594; median working submission 29.86.
 
 ## Layout
 
