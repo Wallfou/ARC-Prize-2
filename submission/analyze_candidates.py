@@ -142,7 +142,8 @@ def main():
               "   (threshold pruned single views)")
 
 
-def sweep(cand_dir, solutions, floors=(0.20, 0.15, 0.10, 0.05, 0.02)):
+def sweep(cand_dir, solutions,
+          floors=(0.60, 0.50, 0.40, 0.30, 0.20, 0.15, 0.10, 0.05, 0.02)):
     """Report generation recall and pass@2 at several probability floors.
 
     A candidate's beam_score is the cumulative negative log-likelihood of the
@@ -150,6 +151,11 @@ def sweep(cand_dir, solutions, floors=(0.20, 0.15, 0.10, 0.05, 0.02)):
     Search only ever prunes, so a run at a low floor contains everything a
     higher floor would have found: filtering reconstructs the higher arms
     exactly, and one GPU run yields the entire curve.
+
+    What filtering CANNOT show: a stricter floor also makes each puzzle cheaper,
+    so more augmented views finish inside the time cap. That extra coverage is
+    invisible here. So the higher-floor rows answer only "does discarding these
+    candidates hurt?" -- not "does the freed time help?".
     """
     import math
     sol = json.load(open(solutions))
