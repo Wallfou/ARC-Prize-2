@@ -46,11 +46,12 @@ after every push, before running.
 despite what Kaggle's Data tab says. All 240 of its tasks are *training* tasks.
 Any score computed against it is meaningless. `validate_local.py` asserts this.
 
-**The public eval split cannot measure improvement.** We score 82.6% on it
-against 27.22% on the hidden set, because 55% of the checkpoint's training data
-was synthesised from those very puzzles' descriptions. Use it as a pre-flight
-check that the pipeline runs, never as a score. The leaderboard is the only
-honest signal, at one submission per day.
+**Check which checkpoint a measurement came from.** The 2B scores 82.6% on the
+public eval split; the 4B scores 26.1% on the same split, matching NVARC's
+published figure. The 2B is contaminated, not the benchmark. For the 4B, eval
+tracks the leaderboard within ~2.4pp, so an eval commit run is a valid A/B
+instrument — and far better than the leaderboard, whose noise floor we measured
+at 1.67pp on byte-identical code.
 
 **Silent success is the recurring failure mode.** Three times now, something
 broke while the notebook reported COMPLETE and wrote a well-formed submission

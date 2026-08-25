@@ -1,50 +1,57 @@
 # ARC Prize 2026 — Iteration Plan
 
-> **Status 2026-08-25 — leaderboard 29.31% / 27.64% (same config, twice), 69 days left.**
+> **Status 2026-08-25 — leaderboard 29.31% / 27.64% (same config twice), 69 days left.**
 >
-> **Measured noise floor: 1.67 points on byte-identical code.** A single
-> submission cannot resolve anything under ~2pp. Treat the leaderboard as a
-> confirmation instrument, never as a measurement one; size effects offline,
-> where event counts give far more power.
+> **Two earlier conclusions were wrong. Both corrected below.**
 >
-> Progression: 13.33% → 20.69% → 27.22% → 29.31%/27.64%. Rank ~602 of 1594.
-> Against the mean of the two v34 runs, the Tier 0 batch was worth ~1.3pp (not
-> the +2.09 a single sample suggested), and we sit ~1.2 below NVARC's published
-> 29.72 rather than 0.4. Full record in Notion, *Iteration 2 : Notes*.
+> **1. The public eval split IS a usable yardstick — for the 4B.** Our 4B scores
+> 26.1% on it against NVARC's published 25% for the same checkpoint, and within
+> 2.4pp of our own leaderboard result. The 82.6% that led us to call eval
+> "saturated and useless" came from the **2B**, which is the anomaly: NVARC also
+> report 25/120 for their 2B against our 99/120, so `sft141` appears to have the
+> eval puzzles in training in a way `sft139` does not.
+> **A commit run (~5.2h wall, ~10h quota; halve it with `ARC_TASK_LIMIT=60`) now
+> replaces a submission for A/B work.** This is the first measurement loop that
+> costs less than a day.
 >
-> **Every cheap lever has now been tested and rejected:**
+> **2. The bottleneck is generation, overwhelmingly.** Measured on the 4B, not
+> the 2B:
+>
+> | | 2B (contaminated) | 4B (what we run) |
+> |---|---|---|
+> | Correct grid generated | 87.8% | **32.6%** |
+> | Never generated | 12.2% | **67.4%** |
+> | Generated but ranked out | 4.1% | 7.6% |
+>
+> The model cannot produce the right grid two-thirds of the time. Not a search
+> problem, not a ranking problem — capability and training data.
+>
+> **Measured noise floor: 1.67pp on byte-identical code** (29.31 vs 27.64). A
+> single submission cannot resolve anything under ~2pp.
+>
+> **Every cheap lever is exhausted:**
 >
 > | Lever | Verdict | Cost to learn |
 > |---|---|---|
-> | Lower the probability floor | **Harmful** — 19.9h against an 11.6h budget, and pass@2 flat across all floors | 1 commit run |
+> | Lower the probability floor | Harmful — 19.9h against 11.6h, pass@2 flat | 1 commit run |
+> | Raise the probability floor | Harmful — pass@2 falls monotonically above 0.2 | free, offline |
 > | Length-normalised scoring | Worse (139 vs 144 of 151) | free, offline |
-> | Dual-selector attempts | No gain (144, unchanged) | free, offline |
+> | Dual-selector attempts | No gain | free, offline |
 > | Four alternative rankers | All worse than the current one | free, offline |
 >
-> **~30% is the measured ceiling of this recipe**, from several directions. 8th
-> place at 33.89 needs something the published method does not contain — better
-> training data, a better base model, or a different approach. Not a tuning change.
+> 0.2 is the measured knee; NVARC chose it correctly. Selection is worth at most
+> 7.6pp and the current ranker captures most of it.
 >
-> **The one untested hypothesis:** the search may be *time*-limited rather than
-> recall-limited, in which case *raising* the floor above 0.2 trades exploration
-> depth for view coverage. One eval commit run at 0.3–0.4 settles it.
+> **Also corrected: there is ~2.4h of idle compute, not 4–8h.** Median 550s per
+> puzzle on real eval tasks projects to 9.2h of the 11.6h budget. The earlier
+> figure came from four easy smoke puzzles.
 >
-> **Corrections to what follows, learned the hard way:**
->
-> | This plan said | Reality |
-> |---|---|
-> | Throughput is the binding constraint | True after all, but only once the search is widened. At the default floor there are 4–8h idle; at 0.05 it needs 20h. |
-> | Spend the idle budget on more search | Tested and harmful. The extra candidates are ones the model does not believe, and nothing ranks them. |
-> | Validate offline on the public eval split | Saturated for scoring, but its *event counts* are the only instrument with real power. Use recall, not accuracy. |
-> | Selection is where the points are | Not for us. The current ranker beat every alternative tried. |
->
-> **The parallel track is now the better bet**, and this is no longer a hedge:
-> the writeup award (\$275k, judged on Theory and Novelty as much as Accuracy)
-> and the Paper Track (\$450k, 150 participants vs 6,238 entrants, \$375k of it a
-> threshold prize not requiring a high score). Two iterations of notes now
-> contain a measured noise floor, four rejected levers with reasoning, three
-> silent-failure bugs, and a clean demonstration that the obvious lever is
-> actively harmful under a compute budget.
+> **Next.** Closing a 67.4% generation gap means better training data or a better
+> base model — the expensive lever, now the only one left, and finally testable
+> against a 26.1% offline baseline. In parallel, the writeup award (\$275k) and
+> Paper Track (\$450k, 150 participants vs 6,238 entrants) remain the better
+> expected value, and this iteration's material is strong: a measured noise floor,
+> five rejected levers, and two of our own conclusions overturned by measurement.
 
 ---
 
