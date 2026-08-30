@@ -24,26 +24,66 @@ under 8 fixed augmentations, and submits the top 2.
 ## 2. The goal
 
 Ken's target: **above 30% and a top 100–300 finish**, on the competition track.
-Not the prize positions (8th is ~33.9%). The field is packed — roughly 770 teams
-inside 6.7 points — so **+2pp is worth several hundred ranks.**
+
+> **Re-measured 2026-08-30 against the live leaderboard (1,712 teams). 30% no
+> longer buys the stated rank — the field moved under us.**
+>
+> | Rank | Score today |
+> |---|---|
+> | 8 (last paying) | 34.44 |
+> | 100 | **31.94** |
+> | 200 | 31.39 |
+> | 300 | **30.97** |
+> | 500 | 30.14 |
+> | **us, 29.31** | **~642** |
+>
+> In numbers the goal is **31.0% for top 300, 32.0% for top 100** — +1.7pp and
+> +2.7pp from here. Against a 1.67pp noise floor, aim at **32%**, so that a
+> bad-noise run still lands inside 300. "Above 30%" on its own is rank ~549.
+>
+> Refresh before planning; this moved ~2pp in four days:
+> `kaggle competitions leaderboard -c arc-prize-2026-arc-agi-2 --download`
+
 
 ## 3. Do this first: Tier A
 
 Full reasoning in the Notion page *arc-prize-next-steps-2026-08-26* (see §8).
 Ordered by expected value. None of these costs a submission day.
 
-### A1. Diff the public 33.89% notebooks against `submission/src`
-Public notebooks running this same stack reportedly score **33.89 / 32.22 /
-31.81%** while we sit at 29.31%. If real, that is a diff against readable code,
-not research. A competitor publicly reported being stuck at 28–29% with settings
-he believed identical (Kaggle `discussion/733930`), unanswered.
+### A1. Diff the public notebooks — ✅ DONE 2026-08-30. The premise was wrong; the answer is A3.
 
-**Do this first, and re-verify the three numbers before trusting them** — they
-were recorded 2026-08-21 and public notebooks get revised. This is the least
-verified claim in the whole plan and it is load-bearing for the rest.
+**The three numbers were misattributed.** Verified against the live leaderboard
+by matching notebook authors to their teams:
 
-Diff, in priority order: the installed dependency set; per-puzzle and DFS time
-caps; augmentation counts at fine-tuning, inference and re-scoring.
+| Author | Notebook title | **Actual LB** | Rank |
+|---|---|---|---|
+| `mikelou1` | "ARC AGI2 **LB33.89** Minimal Perfpatch" | **28.61** | 758 |
+| `boristown` | byte-identical fork of the above | 29.72 | 596 |
+| `koushikrudra` | "ARC AGI2 Original KG" | **33.89** | 9 |
+| `yusuketogashi` | "ARC Baseline Rebuild" | **31.81** | 147 |
+| `madarshbb` | "Reproduce NVARC 2025 Results" | 31.39 | 178 |
+| us | — | 29.31 | 677 |
+
+"LB33.89" is a *title*, not mikelou1's score — he is at **28.61, below us**, and
+his is the notebook the old plan pointed at. And koushikrudra, cited here as the
+competitor "stuck at 28–29%", is actually **rank 9** with 107 submissions; his
+33.89 comes from a private notebook, not the public one bearing his name.
+**There was no free 3–4pp sitting in the notebook the plan named.**
+
+What the "Minimal Perfpatch" actually is: keep DFS logits on GPU and gather only
+the ARC tokens rather than `.cpu().log_softmax(-1)` over the vocabulary, plus
+`use_cache=False` in teacher-forced scoring. Algebraically identical — and its
+stated rationale does not apply to us, because **this checkpoint's vocabulary is
+16 tokens**, so "instead of every Qwen vocabulary logit" means 16 values, not
+150k. Only the `use_cache=False` half is a real saving. Not worth a run alone.
+
+Also checked: every public notebook uses `sorokin/pip-install-unsloth-flash-patch`
+as its wheelhouse where we use `wallfou/arc2-wheelhouse`. Worth a look if you
+ever need flash-attn, but `qwen3.patch` is already ruled out as the gap (§6).
+
+**The one notebook genuinely above us is `yusuketogashi/arc-baseline-rebuild`
+(31.81%, rank 147), and its whole edge is a conditional deep retry** — i.e. A3.
+Its primary pass over all tasks is byte-identical to ours. See §3a.
 
 ### A2. Sweep test-time fine-tuning — the only lever that touches the real bottleneck
 **This is the most important item.** Everything previously tested was search or
@@ -57,20 +97,67 @@ scoring 27.08% on this exact hardware used **35 epochs/task, r=8, lr 8e-4**.
 
 Sweep as one bundle: epochs 1→2, `augment(n=)` 16→32, lr 5e-5→1e-4.
 
-**It has to be paid for.** There is no idle budget (§5). Measure the fine-tuning
-share of the 550s median first — it is already in the run logs — so the trade is
-explicit rather than discovered when a run truncates.
+**It has to be paid for.** There is no idle budget (§5) on a 240-task run.
+
+> **Correction 2026-08-30: the fine-tuning share is _not_ in the run logs.**
+> Both this file and the Notion plan said it was. The logs record only
+> `seconds` per puzzle (fields: `key ok seconds peak_infer_mb done avg_seconds
+> affordable outputs task_set`) — there is no TTFT/DFS/scoring breakdown, so
+> Open Question 5 is unanswered and needs instrumentation added first.
+> Measured totals that _are_ available: median 550s, mean 624s, p90 1217s,
+> 120 eval tasks = 5.20h wall = 20.8 GPU-h, projecting to ~10.4h for 240.
 
 Risk: more fine-tuning on 16 augmented copies of 3–5 demo pairs can overfit.
 That is what the eval loop is for.
 
-### A3. Conditional floor retry
-Lowering the candidate probability floor **globally** was measured harmful
-(§6). But that pays the cost on all 240 puzzles including the ones already
-working. Instead: keep 0.2, and for puzzles that come back with an empty or
-degenerate candidate set, retry the search at 0.05 with leftover budget. It only
-fires where the puzzle currently scores zero, so it cannot regress anything.
-`ARC_MIN_PROB` is already configurable.
+### A3. Conditional deep retry — ✅ IMPLEMENTED 2026-08-30, not yet measured
+
+This is the lever behind the only public notebook verified above us
+(`yusuketogashi/arc-baseline-rebuild`, 31.81%, rank 147). His design: run the
+**stock solver over every task**, then re-run only the *starved* ones with an
+expensive config. That is why a 0.08 floor is affordable for him and cost us
+19.9h when we applied it globally — see §6, which is not contradicted.
+
+**"Starved" = fewer than 2 _unique_ candidate grids for an output.** Sharper
+than "empty or degenerate": below two you cannot even fill both pass@2
+attempts, so the second one is structurally wasted.
+
+Measured on our own 120-task 4B eval run (`submission/analyze_starvation.py`):
+
+```
+outputs                        : 172   (120 tasks)
+MISSING  (0 unique candidates) :   9 ( 5.2%)
+STARVED  (<2 unique candidates):  24 (14.0%)
+starved AND currently wrong    :  20 (11.6%)  <- the reachable ceiling
+NOT starved but still wrong    : 109 (63.4%)  <- a retry never sees these
+```
+
+So the honest ceiling is **+11.6pp if every starved output were fixed**, which
+it will not be; a third would be ~+4pp. It cannot touch the 63.4%, so it does
+**not** replace A2. Starved puzzles are also *cheaper* than the rest (median
+392s against 575s) — they finish early because nothing clears the floor.
+
+**What is implemented** (`arc_solver.py`, `decode_pass`): after the normal pass,
+re-decode only the starved outputs' batches at `ARC_RETRY_MIN_PROB` (0.08).
+Ours is **inline**, not a second process like his, so it reuses the adapter
+already fine-tuned for that puzzle instead of paying test-time fine-tuning twice.
+
+Three guards, all covered by `validate_local.py`:
+- **Pace guard** (`arc_config.retry_slack`). Only fires when this worker could
+  finish its share of the queue and still have `RETRY_PACE_MARGIN` (8) puzzles
+  spare. A 240-task run has ~20 min of slack in 11.6h, so **the retry will fire
+  freely on a 120-task eval run and only sometimes on a scored run** — do not
+  read an eval gain as a submission gain without checking the `retried` flag now
+  written to the run logs.
+- **Retry budget** bounded from the moment the retry starts, not from the
+  puzzle's start, or a fast starved puzzle would take ~1100s instead of 300s.
+- **Richer-pass-wins write.** `kgmon` ranks on beam-hit counts, so the two
+  passes' counts must not be unioned; a thinner retry cannot replace a richer
+  first pass.
+
+Next: one 120-task eval commit run. It uses 5.2h of an 11.6h budget, so this
+costs nothing extra. Compare **per-task sets** against the 43/172 baseline.
+
 
 ### A4. Union TRM into `attempt_2` rather than voting on it
 NVARC bolted on TRM (7M params, public weights `cpmpml/arc-prize-trm-031`) and
@@ -147,7 +234,7 @@ one-change-per-run loses. Bisect only when a bundle regresses.
 
 | Lever | Verdict | How we know |
 |---|---|---|
-| Lower the probability floor globally | **Harmful** | 19.9h against an 11.6h budget; pass@2 flat at 28.0% across every floor below 0.2 |
+| Lower the probability floor globally | **Harmful** | 19.9h against an 11.6h budget; pass@2 flat at 28.0% across every floor below 0.2. Still true — but see A3: *conditionally* is a different experiment, and it is what carries the one public notebook above us |
 | Raise the floor above 0.2 | **Harmful** | pass@2 falls monotonically: 26.4 → 25.2 → 24.5 → 23.9 |
 | Length-normalised candidate scoring | Worse | 139 vs 144 of 151 |
 | Dual-selector attempts | No gain | 144, unchanged, every pairing |
@@ -204,6 +291,7 @@ submission/README.md          how the pipeline works, every tuning knob
 submission/src/               source of truth; the notebook is a build artifact
 submission/validate_local.py  28 offline checks, no GPU
 submission/analyze_candidates.py   failure taxonomy + probability-floor sweep
+submission/analyze_starvation.py   starved-output census; sizes the A3 retry
 NVARC/                        reference material from the 2025 winner + the paper
 ```
 

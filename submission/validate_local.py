@@ -228,6 +228,75 @@ def check_completion_masking():
           all(v == -100 for v in lab))
 
 
+def check_starved_retry():
+    """The conditional deep retry must be more permissive than the main pass,
+    must be reachable, and must never fire when the run is behind schedule.
+
+    Lowering the floor globally was measured harmful (19.9h against an 11.6h
+    budget), so the whole value of this lever is that it is conditional. A retry
+    that fired unconditionally, or that fired while the queue was still deep,
+    would reproduce exactly the failure that measurement ruled out.
+    """
+    import ast
+    import arc_config
+
+    check("retry floor is more permissive than the main floor",
+          arc_config.RETRY_MIN_PROB < arc_config.MIN_PROB,
+          f"retry={arc_config.RETRY_MIN_PROB} main={arc_config.MIN_PROB}")
+    check("retry demands at least 2 unique candidates (pass@2 needs two)",
+          arc_config.RETRY_MIN_UNIQUE >= 2, f"{arc_config.RETRY_MIN_UNIQUE}")
+    check("retry has a bounded per-puzzle budget",
+          0 < arc_config.RETRY_BUDGET_S <= arc_config.PUZZLE_BUDGET_S,
+          f"{arc_config.RETRY_BUDGET_S}s against a "
+          f"{arc_config.PUZZLE_BUDGET_S}s puzzle budget")
+
+    # Behind schedule: many queued, little time left -> must refuse.
+    behind = arc_config.retry_slack(queued=200, elapsed_s=600 * 10, num_done=10,
+                                    remaining_s=600 * 5, num_workers=4)
+    check("no retry when the queue is deep and time is short",
+          behind < arc_config.RETRY_PACE_MARGIN, f"slack={behind:.1f}")
+
+    # Ahead of schedule: queue nearly drained, hours left -> must allow.
+    ahead = arc_config.retry_slack(queued=4, elapsed_s=600 * 10, num_done=10,
+                                   remaining_s=3600 * 4, num_workers=4)
+    check("retry allowed when the queue is short and time remains",
+          ahead >= arc_config.RETRY_PACE_MARGIN, f"slack={ahead:.1f}")
+
+    # The 120-task eval commit run is the measurement loop: it must fire there.
+    # 5.2h of an 11.6h budget observed, so roughly half the budget is spare.
+    eval_like = arc_config.retry_slack(queued=40, elapsed_s=550 * 10, num_done=10,
+                                       remaining_s=3600 * 6, num_workers=4)
+    check("retry fires on an eval-shaped run (the measurement loop)",
+          eval_like >= arc_config.RETRY_PACE_MARGIN, f"slack={eval_like:.1f}")
+
+    check("retry_slack never divides by zero on the first puzzle",
+          arc_config.retry_slack(queued=0, elapsed_s=0, num_done=0,
+                                 remaining_s=100, num_workers=4) == 0.0)
+
+    # Verify the wiring against the source, not against a downstream artifact:
+    # a guard that infers success from something further along has broken here
+    # before, when an upstream change moved the artifact.
+    solver = os.path.join(HERE, "src", "arc_solver.py")
+    tree = ast.parse(open(solver).read())
+    worker = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "worker")
+    calls = [n for n in ast.walk(worker) if isinstance(n, ast.Call)
+             and getattr(n.func, "id", "") == "decode_pass"]
+    check("solver runs exactly two decode passes", len(calls) == 2,
+          f"found {len(calls)}")
+    srcs = [ast.unparse(c) for c in calls]
+    check("the second pass is the one using the retry floor",
+          sum("RETRY_MIN_PROB" in c for c in srcs) == 1,
+          "; ".join(s[:60] for s in srcs))
+    check("the retry is gated on RETRY_STARVED",
+          any(isinstance(n, ast.Attribute) and n.attr == "RETRY_STARVED"
+              for n in ast.walk(worker)))
+    check("the retry reads a pace guard before spending time",
+          any(isinstance(n, ast.Call)
+              and getattr(n.func, "attr", "") == "retry_slack"
+              for n in ast.walk(worker)))
+
+
 def check_end_to_end(data_dir):
     """Fabricate DFS candidates and run the real aggregation path.
 
@@ -324,6 +393,8 @@ def main():
     print()
     check_completion_masking()
     print()
+    check_starved_retry()
+
     check_end_to_end(data_dir)
 
     print()

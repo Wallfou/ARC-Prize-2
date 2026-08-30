@@ -685,6 +685,11 @@ def worker(rank, queue, end_time):
 
                 del trainer
 
+            # Phase clock. The run logs recorded only the per-puzzle total, so
+            # the fine-tuning share -- which decides what an A2 epoch sweep
+            # costs -- was not recoverable from them. Split it here.
+            t_train_done = time.time()
+
             model = FastLanguageModel.for_inference(model)
         
             gc.collect()
@@ -746,95 +751,173 @@ def worker(rank, queue, end_time):
             with torch.inference_mode():
                 
                 known_scores = {}
+                # Distinct grids per base key, across every view. Starvation is a
+                # property of the output, not of one augmented view of it.
+                uniq_by_bk = defaultdict(set)
+                retried = False
+                # Entries written per view so far. The retry re-decodes a view it
+                # already decoded, and kgmon ranks on the number of beam hits, so
+                # the two passes' counts must not be mixed -- keep whichever single
+                # pass was richer rather than unioning them.
+                written_counts = {}
 
-                for subkeys in batches:
+                # One decoding pass over `pass_batches`. Factored out of the loop
+                # body so the same code can run a second time at a lower probability
+                # floor for outputs the first pass left starved -- same views, same
+                # scoring, same files, only `pass_max_score` differs.
+                def decode_pass(pass_batches, pass_max_score, pass_budget_s, label):
+                    # Assigned below; without this the one-off probe flag would
+                    # become a local of this function and read before assignment.
+                    nonlocal _probed
+                    for subkeys in pass_batches:
 
-                    spend_time = time.time() - start_time
-                    if spend_time > arc_config.PUZZLE_BUDGET_S or time.time() > end_time:
-                        print(f"[Rank {rank}] timeout after {spend_time:.1f}s for puzzle {key}")
-                        break
+                        spend_time = time.time() - start_time
+                        if spend_time > pass_budget_s or time.time() > end_time:
+                            print(f"[Rank {rank}] {label} timeout after {spend_time:.1f}s for puzzle {key}")
+                            break
 
-                    print(f"[Rank {rank}] decoding {subkeys}")
+                        print(f"[Rank {rank}] {label} {subkeys}")
 
-                    tokens = []
-                    for subkey in subkeys:
-                        data = eval_ds.get(subkey, formatter)
-                        tokens.append(tokenizer.encode(data["input"]))
+                        tokens = []
+                        for subkey in subkeys:
+                            data = eval_ds.get(subkey, formatter)
+                            tokens.append(tokenizer.encode(data["input"]))
 
-                    # The 4 views in a batch are chosen to share grid dimensions (a
-                    # view and its 180-degree partner), so lengths normally match.
-                    # They can still diverge when cut_to_len drops different demo
-                    # pairs from differently-shuffled views on an oversized puzzle.
-                    # Padding is not safe: turbo_dfs has no attention mask and takes
-                    # position_ids from input_ids.size(1), so pads would be attended
-                    # to and every position would shift. Group by length instead.
-                    # One-off decoder probe (ARC_PROBE_DFS=1). Runs on rank 0's first
-                    # batch only, then never again, so it costs one puzzle's time.
-                    if arc_config.PROBE_DFS and rank == 0 and num_done == 0 and not _probed:
-                        _probed = True
-                        probe_decoder(model, formatter, tokens, max_new_tokens,
-                                      max_score, end_time, rank)
+                        # The 4 views in a batch are chosen to share grid dimensions (a
+                        # view and its 180-degree partner), so lengths normally match.
+                        # They can still diverge when cut_to_len drops different demo
+                        # pairs from differently-shuffled views on an oversized puzzle.
+                        # Padding is not safe: turbo_dfs has no attention mask and takes
+                        # position_ids from input_ids.size(1), so pads would be attended
+                        # to and every position would shift. Group by length instead.
+                        # One-off decoder probe (ARC_PROBE_DFS=1). Runs on rank 0's first
+                        # batch only, then never again, so it costs one puzzle's time.
+                        if arc_config.PROBE_DFS and rank == 0 and num_done == 0 and not _probed:
+                            _probed = True
+                            probe_decoder(model, formatter, tokens, max_new_tokens,
+                                          max_score, end_time, rank)
 
-                    by_len = defaultdict(list)
-                    for _i, _t in enumerate(tokens):
-                        by_len[len(_t)].append(_i)
-                    if len(by_len) > 1:
-                        print(f"[Rank {rank}] ragged batch {sorted(by_len)} -- "
-                              f"splitting into {len(by_len)} groups", flush=True)
+                        by_len = defaultdict(list)
+                        for _i, _t in enumerate(tokens):
+                            by_len[len(_t)].append(_i)
+                        if len(by_len) > 1:
+                            print(f"[Rank {rank}] ragged batch {sorted(by_len)} -- "
+                                  f"splitting into {len(by_len)} groups", flush=True)
 
-                    dfs_result = []
-                    for _idxs in by_len.values():
-                        for _local, _beams in inference_turbo_dfs(
-                                model, [tokens[_j] for _j in _idxs],
-                                max_new_tokens, max_score, end_time):
-                            dfs_result.append((_idxs[_local], _beams))
+                        dfs_result = []
+                        for _idxs in by_len.values():
+                            for _local, _beams in inference_turbo_dfs(
+                                    model, [tokens[_j] for _j in _idxs],
+                                    max_new_tokens, pass_max_score, end_time):
+                                dfs_result.append((_idxs[_local], _beams))
 
-                    for subkey_id, scored_beams in dfs_result:
+                        for subkey_id, scored_beams in dfs_result:
 
-                        subkey = subkeys[subkey_id]
-                        bk = subkey.split(".")[0]
-                        decoded_result = []
+                            subkey = subkeys[subkey_id]
+                            bk = subkey.split(".")[0]
+                            decoded_result = []
 
-                        for beam_score, tokens in scored_beams:
+                            for beam_score, tokens in scored_beams:
 
-                            array = formatter.convert_tokens_to_array(tokens)
-                            if array is None:
-                                continue
+                                array = formatter.convert_tokens_to_array(tokens)
+                                if array is None:
+                                    continue
 
-                            solution = puzzle_ds_multi.invert_mod(array, subkey, inv_perm=True)
+                                solution = puzzle_ds_multi.invert_mod(array, subkey, inv_perm=True)
 
-                            grid_id = (bk, tuple(map(tuple, solution)))
+                                grid_id = (bk, tuple(map(tuple, solution)))
+                                uniq_by_bk[bk].add(grid_id[1])
 
-                            if grid_id in known_scores:
-                                augmented_scores = known_scores[grid_id]
-                            else:
-                                print(f"[Rank {rank}] scoring {subkey} #{len(decoded_result)}")
-                                aug_dataset = ArcDataset(
-                                    keys=[bk],
-                                    queries={bk: puzzle_ds_multi.queries.get(bk)},
-                                    replies={bk: [solution.tolist()]},
-                                )
-                                aug_dataset = aug_dataset.augment(seed=hash(bk) % 1024**2)
-                                aug_dataset = aug_dataset.cut_to_len(formatter=formatter, name="input", max_len=max_seq_length-max_new_tokens)
-                                aug_queries = []
-                                aug_answers = []
-                                for augmented_sample in aug_dataset.as_list(formatter):
-                                    aug_queries.append(augmented_sample["input"])
-                                    aug_answers.append(augmented_sample["reply"])
-                                augmented_scores1 = calc_scores(aug_queries[:4], aug_answers[:4], tokenizer, model)
-                                augmented_scores2 = calc_scores(aug_queries[4:], aug_answers[4:], tokenizer, model)
-                                augmented_scores = augmented_scores1 + augmented_scores2
-                                known_scores[grid_id] = augmented_scores
+                                if grid_id in known_scores:
+                                    augmented_scores = known_scores[grid_id]
+                                else:
+                                    print(f"[Rank {rank}] scoring {subkey} #{len(decoded_result)}")
+                                    aug_dataset = ArcDataset(
+                                        keys=[bk],
+                                        queries={bk: puzzle_ds_multi.queries.get(bk)},
+                                        replies={bk: [solution.tolist()]},
+                                    )
+                                    aug_dataset = aug_dataset.augment(seed=hash(bk) % 1024**2)
+                                    aug_dataset = aug_dataset.cut_to_len(formatter=formatter, name="input", max_len=max_seq_length-max_new_tokens)
+                                    aug_queries = []
+                                    aug_answers = []
+                                    for augmented_sample in aug_dataset.as_list(formatter):
+                                        aug_queries.append(augmented_sample["input"])
+                                        aug_answers.append(augmented_sample["reply"])
+                                    augmented_scores1 = calc_scores(aug_queries[:4], aug_answers[:4], tokenizer, model)
+                                    augmented_scores2 = calc_scores(aug_queries[4:], aug_answers[4:], tokenizer, model)
+                                    augmented_scores = augmented_scores1 + augmented_scores2
+                                    known_scores[grid_id] = augmented_scores
                         
-                            decoded_result.append({
-                                "beam_score": beam_score,
-                                "score_aug": augmented_scores,
-                                "solution": solution,
-                            })
+                                decoded_result.append({
+                                    "beam_score": beam_score,
+                                    "score_aug": augmented_scores,
+                                    "solution": solution,
+                                })
 
-                        if len(decoded_result):
-                            with bz2.BZ2File(os.path.join(dir_outputs, subkey), "w") as f:
-                                pickle.dump(decoded_result, f)
+                            # A lower floor keeps everything a higher one kept, so the
+                            # retry is a superset in expectation -- but NVARC document
+                            # the batched search as nondeterministic, so do not let a
+                            # thinner second pass replace a richer first one.
+                            if len(decoded_result) >= written_counts.get(subkey, 1):
+                                written_counts[subkey] = len(decoded_result)
+                                with bz2.BZ2File(os.path.join(dir_outputs, subkey), "w") as f:
+                                    pickle.dump(decoded_result, f)
+
+                decode_pass(batches, max_score, arc_config.PUZZLE_BUDGET_S, "decode")
+                t_decode_done = time.time()
+
+                # --- conditional deep retry on starved outputs -------------------
+                # Only outputs with fewer than RETRY_MIN_UNIQUE distinct candidate
+                # grids are retried, and only at a lower floor. Everything the first
+                # pass found is still found at a lower floor, so a retried file is a
+                # superset of the one it replaces: this cannot remove a candidate.
+                if arc_config.RETRY_STARVED:
+                    starved = sorted(
+                        bk for bk in {sk.split('.')[0] for b in batches for sk in b}
+                        if len(uniq_by_bk[bk]) < arc_config.RETRY_MIN_UNIQUE)
+
+                    # Spending time here must not cost a later puzzle its whole run.
+                    # qsize() counts the NUM_WORKERS sentinels too, hence the floor.
+                    try:
+                        queued = max(0, queue.qsize() - arc_config.NUM_WORKERS)
+                    except NotImplementedError:
+                        queued = 0
+                    slack = arc_config.retry_slack(
+                        queued=queued,
+                        elapsed_s=time.time() - worker_start,
+                        num_done=num_done + 1,
+                        remaining_s=end_time - time.time())
+
+                    if not starved:
+                        pass
+                    elif slack < arc_config.RETRY_PACE_MARGIN:
+                        print(f"[Rank {rank}] {len(starved)} starved outputs on {key} "
+                              f"but only {slack:.1f} puzzles of slack -- skipping retry",
+                              flush=True)
+                    else:
+                        retry_batches = [b for b in batches
+                                         if any(sk.split('.')[0] in starved for sk in b)]
+                        print(f"[Rank {rank}] retrying {len(starved)} starved outputs "
+                              f"on {key} at floor {arc_config.RETRY_MIN_PROB} "
+                              f"({len(retry_batches)} batches, slack {slack:.1f})",
+                              flush=True)
+                        retried = True
+                        # RETRY_BUDGET_S is time for the *retry*, so bound it from
+                        # now rather than from the puzzle's start: starved puzzles
+                        # finish early (median 392s against a 1200s budget), and a
+                        # bound of PUZZLE_BUDGET_S + RETRY_BUDGET_S would hand them
+                        # ~1100s instead of the 300s this is costed at.
+                        decode_pass(retry_batches,
+                                    -np.log(arc_config.RETRY_MIN_PROB),
+                                    min(arc_config.PUZZLE_BUDGET_S
+                                        + arc_config.RETRY_BUDGET_S,
+                                        (time.time() - start_time)
+                                        + arc_config.RETRY_BUDGET_S),
+                                    "retry")
+                        gained = sum(len(uniq_by_bk[bk]) for bk in starved)
+                        print(f"[Rank {rank}] retry left {gained} unique grids across "
+                              f"{len(starved)} starved outputs on {key}", flush=True)
 
             memory_allocated = torch.cuda.max_memory_allocated() // 1024**2
             print(f"[Rank {rank}] allocated {memory_allocated}MB for inference")
@@ -855,6 +938,12 @@ def worker(rank, queue, end_time):
                    peak_infer_mb=memory_allocated, done=num_done,
                    avg_seconds=round(avg, 1), affordable=affordable,
                    outputs=len(test_id_to_subkeys),
+                   retried=retried,
+                   ttft_s=round(t_train_done - start_time, 1),
+                   decode_s=round(t_decode_done - t_train_done, 1),
+                   retry_s=round(time.time() - t_decode_done, 1),
+                   starved=sum(1 for v in uniq_by_bk.values()
+                               if len(v) < arc_config.RETRY_MIN_UNIQUE),
                    task_set=arc_config.TASK_SET)
         except Exception as e:
             num_failed += 1

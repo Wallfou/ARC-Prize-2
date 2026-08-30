@@ -178,6 +178,56 @@ PROBE_DFS = os.environ.get("ARC_PROBE_DFS", "0") == "1"
 # reconstruct any higher floor offline. One run, whole sweep.
 MIN_PROB = float(os.environ.get("ARC_MIN_PROB", 0.2))
 
+# --- Conditional deep retry on starved outputs -------------------------------
+# An output is STARVED when the search produced fewer than two *unique* candidate
+# grids for it. Below two you cannot even fill both pass@2 attempts, so the
+# second attempt is structurally wasted.
+#
+# Lowering MIN_PROB for every puzzle was measured harmful -- 19.9h against an
+# 11.6h budget, pass@2 flat -- because it pays the cost on the puzzles that
+# already work. Retrying only the starved outputs pays it exactly where the
+# score is currently zero, which is what that global sweep could not see.
+#
+# Measured on our 120-task 4B eval run (submission/analyze_starvation.py):
+#   24 of 172 outputs starved (14.0%), 9 of them with no candidate at all;
+#   20 of the 24 are currently wrong -- the reachable ceiling, 11.6%;
+#   109 outputs (63.4%) are wrong while NOT starved, and a retry never sees them.
+# Starved puzzles are *cheaper* than the rest (median 392s against 575s): they
+# finish early because nothing clears the floor, so they have headroom.
+#
+# The same design carries the public notebook `yusuketogashi/arc-baseline-rebuild`
+# (31.81% public LB, rank 147 on 2026-08-30), which runs the stock solver over
+# every task and re-runs only the starved ones at a 0.08 floor.
+RETRY_STARVED = os.environ.get("ARC_RETRY_STARVED", "1") == "1"
+RETRY_MIN_PROB = float(os.environ.get("ARC_RETRY_MIN_PROB", 0.08))
+RETRY_MIN_UNIQUE = int(os.environ.get("ARC_RETRY_MIN_UNIQUE", 2))
+
+# Extra wall clock one puzzle may spend on its retry, on top of PUZZLE_BUDGET_S.
+RETRY_BUDGET_S = float(os.environ.get("ARC_RETRY_BUDGET_S", 300))
+
+# The retry must not buy candidates for early puzzles by dropping late ones.
+# A 240-task scored run has ~20 minutes of slack in 11.6h, so the retry only
+# fires when this many puzzles beyond those still queued would fit before the
+# deadline at the worker's current pace. On a 120-task eval commit run, which
+# uses 5.2h of the same budget, the slack is large and it fires freely.
+RETRY_PACE_MARGIN = int(os.environ.get("ARC_RETRY_PACE_MARGIN", 8))
+
+
+def retry_slack(queued, elapsed_s, num_done, remaining_s, num_workers=None):
+    """Puzzles of headroom beyond those still queued, at the current pace.
+
+    Positive means this worker could finish its remaining share and still have
+    room to spare; the retry is only allowed to spend that surplus. Kept here,
+    pure and free of torch, so it can be tested without a GPU.
+    """
+    workers = num_workers or NUM_WORKERS
+    avg = elapsed_s / max(1, num_done)
+    if avg <= 0:
+        return 0.0
+    fit = remaining_s / avg
+    mine = max(0, queued) / max(1, workers)
+    return fit - mine
+
 _START = time.time()
 
 
