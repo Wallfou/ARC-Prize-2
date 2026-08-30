@@ -11,7 +11,8 @@ checkpoint is 29.72. Rank ~602 of 1594; median working submission 29.86.
 
 | | |
 |---|---|
-| [PLAN.md](PLAN.md) | **Start here.** Status, corrections to earlier assumptions, next levers, decision points. |
+| [HANDOFF.md](HANDOFF.md) | **Start here if you are new.** State, next steps, what has been ruled out, and the traps. |
+| [PLAN.md](PLAN.md) | Longer-form status, corrections to earlier assumptions, decision points. |
 | [submission/](submission/README.md) | The entry: a port of the 2025 winner. How it works, how to build and run it. |
 | [NVARC/](NVARC/README.md) | Reference material from the 2025 winner. Not our code — see it for attribution. |
 | [example/](example) | The competition data files, needed by the offline tests. |
