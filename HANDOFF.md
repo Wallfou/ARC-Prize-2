@@ -81,9 +81,14 @@ Also checked: every public notebook uses `sorokin/pip-install-unsloth-flash-patc
 as its wheelhouse where we use `wallfou/arc2-wheelhouse`. Worth a look if you
 ever need flash-attn, but `qwen3.patch` is already ruled out as the gap (§6).
 
-**The one notebook genuinely above us is `yusuketogashi/arc-baseline-rebuild`
-(31.81%, rank 147), and its whole edge is a conditional deep retry** — i.e. A3.
-Its primary pass over all tasks is byte-identical to ours. See §3a.
+`yusuketogashi/arc-baseline-rebuild` (31.81%, rank 147) is the one notebook
+verified above us, and its edge looked like a conditional deep retry. **It is
+not: that retry is measured worth exactly zero on its own published run (A3).**
+
+What is left is the finding that matters more. **His primary pass scores 43/172
+on the eval split — identical to ours, output for output** — and his deep pass
+adds nothing. So there is *no code difference* behind his +2.5pp. What differs
+is **38 submissions against our 6**, into a 1.67pp noise floor. See §5.
 
 ### A2. Sweep test-time fine-tuning — the only lever that touches the real bottleneck
 **This is the most important item.** Everything previously tested was search or
@@ -110,53 +115,37 @@ Sweep as one bundle: epochs 1→2, `augment(n=)` 16→32, lr 5e-5→1e-4.
 Risk: more fine-tuning on 16 augmented copies of 3–5 demo pairs can overfit.
 That is what the eval loop is for.
 
-### A3. Conditional deep retry — ✅ IMPLEMENTED 2026-08-30, not yet measured
+### A3. Conditional deep retry — ❌ MEASURED WORTHLESS 2026-08-30. Do not redo.
 
-This is the lever behind the only public notebook verified above us
-(`yusuketogashi/arc-baseline-rebuild`, 31.81%, rank 147). His design: run the
-**stock solver over every task**, then re-run only the *starved* ones with an
-expensive config. That is why a 0.08 floor is affordable for him and cost us
-19.9h when we applied it globally — see §6, which is not contradicted.
+Killed by the strongest evidence available: **the other team's own published run
+output.** `yusuketogashi/arc-baseline-rebuild` (31.81% LB, rank 147) ships both
+its primary-only and its deep-augmented submission for the same 120-task eval
+run. `kaggle kernels output yusuketogashi/arc-baseline-rebuild` retrieves them.
 
-**"Starved" = fewer than 2 _unique_ candidate grids for an output.** Sharper
-than "empty or degenerate": below two you cannot even fill both pass@2
-attempts, so the second one is structurally wasted.
-
-Measured on our own 120-task 4B eval run (`submission/analyze_starvation.py`):
+Scored against `example/arc-agi_evaluation_solutions.json`:
 
 ```
-outputs                        : 172   (120 tasks)
-MISSING  (0 unique candidates) :   9 ( 5.2%)
-STARVED  (<2 unique candidates):  24 (14.0%)
-starved AND currently wrong    :  20 (11.6%)  <- the reachable ceiling
-NOT starved but still wrong    : 109 (63.4%)  <- a retry never sees these
+primary only : 43/172 (25.00%)
+deep applied : 43/172 (25.00%)
+gained 0 | lost 0 | NET FLIPS +0
 ```
 
-So the honest ceiling is **+11.6pp if every starved output were fixed**, which
-it will not be; a third would be ~+4pp. It cannot touch the 63.4%, so it does
-**not** replace A2. Starved puzzles are also *cheaper* than the rest (median
-392s against 575s) — they finish early because nothing clears the floor.
+From a deep pass **strictly more aggressive than anything we would build**:
+floor 0.08 *and* 24 inference origins *and* 16 scoring views *and* a 2400s task
+cap, 1.9h over 18 selected tasks, `deep_status=COMPLETED`, return code 0.
 
-**What is implemented** (`arc_solver.py`, `decode_pass`): after the normal pass,
-re-decode only the starved outputs' batches at `ARC_RETRY_MIN_PROB` (0.08).
-Ours is **inline**, not a second process like his, so it reuses the adapter
-already fine-tuned for that puzzle instead of paying test-time fine-tuning twice.
+It worked mechanically and still scored nothing: outputs with no candidate at
+all fell **10 → 4**, and 13 submitted answers changed — **none of the recovered
+grids was correct.** The retry converts "no answer" into "wrong answer".
 
-Three guards, all covered by `validate_local.py`:
-- **Pace guard** (`arc_config.retry_slack`). Only fires when this worker could
-  finish its share of the queue and still have `RETRY_PACE_MARGIN` (8) puzzles
-  spare. A 240-task run has ~20 min of slack in 11.6h, so **the retry will fire
-  freely on a 120-task eval run and only sometimes on a scored run** — do not
-  read an eval gain as a submission gain without checking the `retried` flag now
-  written to the run logs.
-- **Retry budget** bounded from the moment the retry starts, not from the
-  puzzle's start, or a fast starved puzzle would take ~1100s instead of 300s.
-- **Richer-pass-wins write.** `kgmon` ranks on beam-hit counts, so the two
-  passes' counts must not be unioned; a thinner retry cannot replace a richer
-  first pass.
+**The lesson generalises past this lever.** A starved output is not the floor
+pruning a grid the model knew; it is the model not knowing the grid. That is
+§4's generation bottleneck restated, and it means *no search or floor setting
+fixes it.* Treat "spend more search on the hard ones" as closed.
 
-Next: one 120-task eval commit run. It uses 5.2h of an 11.6h budget, so this
-costs nothing extra. Compare **per-task sets** against the 43/172 baseline.
+Code is kept and defaults **off** (`ARC_RETRY_STARVED=0`): `decode_pass` in
+`arc_solver.py`, knobs in `arc_config.py`, census in `analyze_starvation.py`.
+Re-enable only if the *generator* improves enough to change the premise.
 
 
 ### A4. Union TRM into `attempt_2` rather than voting on it
@@ -220,6 +209,28 @@ submissions. Use `ARC_TASK_LIMIT=60` to halve the cost when screening.
 is ~5.2h wall and ~10h quota (L4×4 bills at 2×) against 30h/week — so about
 **3 offline experiments per week, ~30 left**. Submission GPU time is not charged.
 
+**Submission count predicts score, and we are badly under-sampled.** Across the
+964 teams scoring above 15%:
+
+| submissions | teams | median score |
+|---|---|---|
+| 1–5 | 484 | 29.38 |
+| 6–15 | 259 | 30.56 |
+| 16–40 | 146 | 31.11 |
+| 41–80 | 53 | **32.22** |
+| 81+ | 22 | **32.36** |
+
+Correlation +0.33. **We have 6 submissions and sit at 29.31.** The confound is
+real — teams that submit more also iterate more — but the cleanest control
+available says selection is a large part of it: `yusuketogashi` scores *exactly
+what we score* on eval (43/172) with a deep pass worth zero, and is +2.5pp ahead
+on the leaderboard with 38 submissions. Best-of-N against a 1.67pp floor.
+
+Submissions do **not** consume the GPU quota (only commit runs do), and the cap
+is 1/day with ~63 days left. Banking repeat runs of the known-good config is
+close to free and buys ranks directly. Two submissions are chosen for final
+judging, so keep the best one selected at all times.
+
 **Compare per-task sets, not aggregate rates.** On 120 tasks at p≈0.26 the
 binomial standard deviation is ~4pp, so "26.1% → 29.4%" unpaired is meaningless.
 The runs are paired: diff the solved-task sets and count flips. Roughly **8 net
@@ -234,7 +245,8 @@ one-change-per-run loses. Bisect only when a bundle regresses.
 
 | Lever | Verdict | How we know |
 |---|---|---|
-| Lower the probability floor globally | **Harmful** | 19.9h against an 11.6h budget; pass@2 flat at 28.0% across every floor below 0.2. Still true — but see A3: *conditionally* is a different experiment, and it is what carries the one public notebook above us |
+| Lower the probability floor globally | **Harmful** | 19.9h against an 11.6h budget; pass@2 flat at 28.0% across every floor below 0.2 |
+| Lower the floor *conditionally*, on starved outputs only | **Worthless** | 43/172 with and without, zero net flips, on the published run of a strictly more aggressive version (A3). Recovers missing candidates; none is correct |
 | Raise the floor above 0.2 | **Harmful** | pass@2 falls monotonically: 26.4 → 25.2 → 24.5 → 23.9 |
 | Length-normalised candidate scoring | Worse | 139 vs 144 of 151 |
 | Dual-selector attempts | No gain | 144, unchanged, every pairing |

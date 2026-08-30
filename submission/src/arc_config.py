@@ -195,10 +195,23 @@ MIN_PROB = float(os.environ.get("ARC_MIN_PROB", 0.2))
 # Starved puzzles are *cheaper* than the rest (median 392s against 575s): they
 # finish early because nothing clears the floor, so they have headroom.
 #
-# The same design carries the public notebook `yusuketogashi/arc-baseline-rebuild`
-# (31.81% public LB, rank 147 on 2026-08-30), which runs the stock solver over
-# every task and re-runs only the starved ones at a 0.08 floor.
-RETRY_STARVED = os.environ.get("ARC_RETRY_STARVED", "1") == "1"
+# MEASURED WORTHLESS 2026-08-30, on that notebook's own published run output.
+# `yusuketogashi/arc-baseline-rebuild` (31.81% LB, rank 147) publishes both its
+# primary-only and its deep-augmented submission for the same 120-task eval run.
+# Scoring both against the eval solutions: 43/172 either way. Zero net flips,
+# zero gains, zero losses -- from a deep pass STRICTLY MORE aggressive than this
+# one (floor 0.08 AND 24 inference origins AND 16 scoring views AND a 2400s cap,
+# 1.9h over 18 tasks, deep_status=COMPLETED).
+#
+# It did work mechanically: outputs with no candidate at all fell 10 -> 4 and 13
+# submitted answers changed. None of the recovered grids was correct. Starvation
+# is the model not knowing the answer, not the floor pruning a known one -- which
+# is exactly the generation bottleneck, and no search setting fixes it.
+# DEFAULT OFF: measured worthless 2026-08-30, see below. Kept because the code
+# and its analysis tooling are correct and cheap to re-enable if the generator
+# ever improves enough that a starved output is a threshold artifact rather
+# than the model simply not knowing the answer.
+RETRY_STARVED = os.environ.get("ARC_RETRY_STARVED", "0") == "1"
 RETRY_MIN_PROB = float(os.environ.get("ARC_RETRY_MIN_PROB", 0.08))
 RETRY_MIN_UNIQUE = int(os.environ.get("ARC_RETRY_MIN_UNIQUE", 2))
 
