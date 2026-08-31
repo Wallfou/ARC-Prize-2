@@ -149,18 +149,20 @@ From a deep pass **strictly more aggressive than anything we would build**:
 floor 0.08 *and* 24 inference origins *and* 16 scoring views *and* a 2400s task
 cap, 1.9h over 18 selected tasks, `deep_status=COMPLETED`, return code 0.
 
-**Confirmed on our own run.** v40 shipped with the retry on before this was
-known. It fired on 20 of 120 tasks and cost 1.80 GPU-h (7.9% of the run):
+**Confirmed on our own run, independently.** v40 shipped with the retry on
+before this was known. It fired on 20 of 120 tasks, re-decoded 154 batches
+across 24 outputs, and cost 1.80 GPU-h (7.9% of the run):
 
 ```
-starvation      24 -> 16 outputs   (9 de-starved, 1 of them correct)
-attributable    +1.00 tasks = +0.83pp   <- the whole effect
-noise           +3.17 tasks = +2.64pp   on outputs it cannot touch
+outputs touched    24     de-starved 8     became correct 0
+score on touched   3.00 -> 3.00            +0.00 tasks
 ```
 
-Same shape as his: it de-starves reliably and converts almost nothing. The one
-flip is inside the run-to-run noise, so +0.83pp is a ceiling, not a measurement.
-`ARC_RETRY_STARVED=0` — it costs 7.9% of a budget with 1.5% of slack.
+**Exactly zero, matching his run exactly.** Two independent measurements, on
+different code paths — his a separate re-fine-tuned pass at 24 origins, ours
+inline on the existing adapter — both land on zero. It de-starves reliably and
+converts nothing. `ARC_RETRY_STARVED=0`: 7.9% of a budget with 1.5% of slack,
+for no flips.
 
 It worked mechanically and still scored nothing: outputs with no candidate at
 all fell **10 → 4**, and 13 submitted answers changed — **none of the recovered
@@ -229,21 +231,25 @@ Set `ARC_TASK_SET=eval` and a commit run gives a real number for zero
 submissions. Use `ARC_TASK_LIMIT=60` to halve the cost when screening.
 
 > **But the eval loop has its own noise floor, and it is WORSE than the
-> leaderboard's. Measured 2026-08-30 on v40 against the v39 baseline: ±2.64pp.**
+> leaderboard's. Measured 2026-08-30, v40 against the v39 baseline: ±3.47pp.**
 >
 > v40 scored 29.58% against the baseline's 26.11% — a headline +3.47pp. Split by
-> whether the change *could* have touched the output:
+> whether the retry *actually touched* the output, read out of the run log:
 >
 > ```
-> retry-ELIGIBLE   (24 outputs)  3.00 -> 4.00   +1.00 tasks  = +0.83pp
-> retry-INELIGIBLE (148 outputs) 28.33 -> 31.50 +3.17 tasks  = +2.64pp  <- NOISE
+> TOUCHED   ( 24 outputs)  3.00 ->  3.00   +0.00 tasks = +0.00pp
+> UNTOUCHED (148 outputs) 28.33 -> 32.50   +4.17 tasks = +3.47pp  <- ALL OF IT
 > ```
 >
-> The change is structurally incapable of affecting those 148 outputs, so the
-> +2.64pp is pure run-to-run variance: 6 gained and 3 lost on outputs nothing
-> touched. `PYTHONHASHSEED=0` is already set, so this is **intrinsic batched-
+> **Every one of the 7 gains and 3 losses is on an output the change never
+> touched.** `PYTHONHASHSEED=0` is already set, so this is **intrinsic batched-
 > search nondeterminism**, which NVARC documents (they measured batch-invariant
 > kernels at 17% slower and dropped them).
+>
+> Partition on what the run log says was touched, **not** on what the baseline
+> looked like. The first cut of this analysis split by baseline starvation and
+> got +0.83pp for the retry — wrong, because the retry fires on the *new* run's
+> starvation and nondeterminism moves which outputs those are.
 >
 > **So a single eval run cannot resolve anything under ~3pp either.** Two
 > defences, and you need one of them:
