@@ -104,13 +104,28 @@ Sweep as one bundle: epochs 1→2, `augment(n=)` 16→32, lr 5e-5→1e-4.
 
 **It has to be paid for.** There is no idle budget (§5) on a 240-task run.
 
-> **Correction 2026-08-30: the fine-tuning share is _not_ in the run logs.**
-> Both this file and the Notion plan said it was. The logs record only
-> `seconds` per puzzle (fields: `key ok seconds peak_infer_mb done avg_seconds
-> affordable outputs task_set`) — there is no TTFT/DFS/scoring breakdown, so
-> Open Question 5 is unanswered and needs instrumentation added first.
-> Measured totals that _are_ available: median 550s, mean 624s, p90 1217s,
-> 120 eval tasks = 5.20h wall = 20.8 GPU-h, projecting to ~10.4h for 240.
+> **ANSWERED 2026-08-30 (v40), and A2 as specified does not fit.**
+> The phase breakdown was never in the logs despite this file and the Notion
+> plan both saying so; `ttft_s`/`decode_s`/`retry_s` were added and have now run:
+>
+> ```
+> total   22.84 GPU-h   685s/task
+>   TTFT   6.91 GPU-h   30.2%   median 167s
+>   decode 14.13 GPU-h  61.9%
+>   retry   1.80 GPU-h   7.9%
+> ```
+>
+> **Test-time fine-tuning is 30.2% of the run** (32.8% excluding the retry).
+> So `num_train_epochs` 1→2 adds ~6.9 GPU-h per 120 tasks:
+>
+> | | 120-task eval | 240-task scored |
+> |---|---|---|
+> | today, no retry | 5.26h | **10.5h** (budget 11.67h) |
+> | 2 epochs | 6.99h | **14.0h** — over by 2.3h |
+>
+> **It is measurable on eval and not deployable on a submission.** Measure it
+> anyway — but know before you start that a win means finding 2.3h, and that
+> the `augment(n=)` 16→32 half of the bundle costs decode time on top.
 
 Risk: more fine-tuning on 16 augmented copies of 3–5 demo pairs can overfit.
 That is what the eval loop is for.
@@ -133,6 +148,19 @@ gained 0 | lost 0 | NET FLIPS +0
 From a deep pass **strictly more aggressive than anything we would build**:
 floor 0.08 *and* 24 inference origins *and* 16 scoring views *and* a 2400s task
 cap, 1.9h over 18 selected tasks, `deep_status=COMPLETED`, return code 0.
+
+**Confirmed on our own run.** v40 shipped with the retry on before this was
+known. It fired on 20 of 120 tasks and cost 1.80 GPU-h (7.9% of the run):
+
+```
+starvation      24 -> 16 outputs   (9 de-starved, 1 of them correct)
+attributable    +1.00 tasks = +0.83pp   <- the whole effect
+noise           +3.17 tasks = +2.64pp   on outputs it cannot touch
+```
+
+Same shape as his: it de-starves reliably and converts almost nothing. The one
+flip is inside the run-to-run noise, so +0.83pp is a ceiling, not a measurement.
+`ARC_RETRY_STARVED=0` — it costs 7.9% of a budget with 1.5% of slack.
 
 It worked mechanically and still scored nothing: outputs with no candidate at
 all fell **10 → 4**, and 13 submitted answers changed — **none of the recovered
@@ -199,6 +227,32 @@ Treat the leaderboard as confirmation, never as measurement.
 there against NVARC's published 25%, within 2.4pp of our leaderboard result.
 Set `ARC_TASK_SET=eval` and a commit run gives a real number for zero
 submissions. Use `ARC_TASK_LIMIT=60` to halve the cost when screening.
+
+> **But the eval loop has its own noise floor, and it is WORSE than the
+> leaderboard's. Measured 2026-08-30 on v40 against the v39 baseline: ±2.64pp.**
+>
+> v40 scored 29.58% against the baseline's 26.11% — a headline +3.47pp. Split by
+> whether the change *could* have touched the output:
+>
+> ```
+> retry-ELIGIBLE   (24 outputs)  3.00 -> 4.00   +1.00 tasks  = +0.83pp
+> retry-INELIGIBLE (148 outputs) 28.33 -> 31.50 +3.17 tasks  = +2.64pp  <- NOISE
+> ```
+>
+> The change is structurally incapable of affecting those 148 outputs, so the
+> +2.64pp is pure run-to-run variance: 6 gained and 3 lost on outputs nothing
+> touched. `PYTHONHASHSEED=0` is already set, so this is **intrinsic batched-
+> search nondeterminism**, which NVARC documents (they measured batch-invariant
+> kernels at 17% slower and dropped them).
+>
+> **So a single eval run cannot resolve anything under ~3pp either.** Two
+> defences, and you need one of them:
+> 1. **Partition the outputs by whether the change could reach them** and score
+>    the halves separately, as above. This is what made v40 readable, and it is
+>    free. Only works for changes with an inert subset (A3 had one; A2 does not).
+> 2. For changes that touch everything, either take several runs or run
+>    batch-invariant kernels (`thinking-machines-lab/batch_invariant_ops`) for
+>    measurement, at ~17% slower.
 
 > Do **not** generalise from the 2B, which scores 82.6% on the same split.
 > That checkpoint is contaminated. Earlier notes wrongly concluded from it that
