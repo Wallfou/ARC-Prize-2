@@ -256,9 +256,30 @@ submissions. Use `ARC_TASK_LIMIT=60` to halve the cost when screening.
 > 1. **Partition the outputs by whether the change could reach them** and score
 >    the halves separately, as above. This is what made v40 readable, and it is
 >    free. Only works for changes with an inert subset (A3 had one; A2 does not).
-> 2. For changes that touch everything, either take several runs or run
->    batch-invariant kernels (`thinking-machines-lab/batch_invariant_ops`) for
->    measurement, at ~17% slower.
+> 2. For changes that touch everything, take several runs — or make truncation
+>    deterministic first (below).
+>
+> **Where the noise most likely comes from — and it is not what the plan said.**
+> The plan pointed at `madarshbb/reproduce-nvarc-2025-results` as "a
+> batch-invariant build using `thinking-machines-lab/batch_invariant_ops`".
+> Pulled it 2026-09-05: **it contains no batch-invariant code at all** — zero
+> hits for `batch_invariant`, `deterministic`, or `cublas`. It is a plain NVARC
+> reproduction with our exact knobs. Third misattributed claim from that page.
+>
+> The likelier dominant source is **wall-clock truncation**. `DFS_BUDGET_S=540`
+> and `PUZZLE_BUDGET_S=1200` cut the search on elapsed time, and **13 of 120
+> tasks hit the 1200s cap** on the baseline run. Wall clock varies between runs
+> with GPU contention and scheduling, so a capped task decodes a different
+> number of views each time — different candidates, different score. Batch-
+> invariant kernels would not fix that; they address a different problem
+> (results changing with batch *composition*, which is fixed here by seed).
+>
+> **Untested hypothesis, cheap to check**: on the next paired eval runs, see
+> whether flipped outputs are disproportionately on tasks at/near the cap. If
+> so, the fix for *measurement* runs is deterministic truncation — cap on work
+> done (batches decoded, nodes expanded) rather than on `time.time()`. No new
+> dependency, and it makes A/B runs comparable. Keep wall-clock caps for scoring
+> runs, where finishing inside 12h is what matters.
 
 > Do **not** generalise from the 2B, which scores 82.6% on the same split.
 > That checkpoint is contaminated. Earlier notes wrongly concluded from it that
@@ -269,8 +290,34 @@ submissions. Use `ARC_TASK_LIMIT=60` to halve the cost when screening.
 is ~5.2h wall and ~10h quota (L4×4 bills at 2×) against 30h/week — so about
 **3 offline experiments per week, ~30 left**. Submission GPU time is not charged.
 
-**Submission count predicts score, and we are badly under-sampled.** Across the
-964 teams scoring above 15%:
+**Submission count predicts score, and we are badly under-sampled.**
+
+Sharpest version, 2026-09-05 — teams running *this exact NVARC stack*:
+
+| team | rank | score | subs |
+|---|---|---|---|
+| `koushikrudra` | 9 | 33.89 | 110 |
+| `yusuketogashi` | 159 | 31.81 | 42 |
+| **`madarshbb`** | **200** | **31.39** | **107** |
+| `boristown` | 651 | 29.72 | 31 |
+| **us** | **731** | **29.31** | **6** |
+| `mikelou1` | 827 | 28.61 | 11 |
+
+`madarshbb`'s public notebook has **byte-identical solver knobs to ours** — 540s
+DFS, 1200s task, 1 epoch, lr 5e-5, floor 0.2, `augment(n=16)`, `n=2` views — and
+scores +2.08pp with 107 submissions. Every team above us has 30+; we have 6.
+
+**The leaderboard scores all 240 tasks.** The smallest gap between distinct
+scores is 0.1389pp = 1/3 of a task out of 240, so there is no held-out public
+subset: a good run's score is locked in, not regressed at the end. That is what
+makes resubmission worth anything at all.
+
+Modelled on our three same-config runs (29.31 / 27.64 / 29.31, mean 28.75):
+at sd 1.2, ~48% of touching 30.97 within 20 submissions and ~73% within 40.
+Highly sensitive to sd, which n=3 barely determines. **This harvests noise; it
+does not improve the solution.** Top 100 (32.22) is out of reach this way.
+
+Across all 964 teams scoring above 15%:
 
 | submissions | teams | median score |
 |---|---|---|
@@ -341,7 +388,13 @@ per-puzzle telemetry only helps for commit and eval runs.
 Downloads are slow once `inference_outputs` exists (~1900 files) — background them.
 
 **Artifacts live in `/tmp` and get cleaned.** The 2B baseline data was already
-lost this way. Re-download rather than assuming.
+lost this way, and on 2026-09-05 the 4B baseline *and* v40 candidate files went
+the same way — six days after download, directories intact but empty. The
+derived numbers survive in this file and in commit messages; the raw candidates
+do not. **If you download a run you intend to compare against later, copy it
+somewhere durable**, or plan to re-download. Note `kernels output` serves only
+the newest version's artifact, so once a newer version runs, the older run's
+output may be unrecoverable.
 
 **The margin is thin.** A 240-task run uses ~11:30 of an 11.6h budget, implying
 ~678s/puzzle — about 9% slower than eval. Simulation: ~1.7 tasks of 240 never
