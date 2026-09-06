@@ -348,12 +348,64 @@ one-change-per-run loses. Bisect only when a bundle regresses.
 
 ---
 
+## 5a. The two-mode score, and why it does not need fixing
+
+**Four scored runs of identical code gave exactly two values** — 29.31 / 27.64 /
+29.31 / 27.64, differing by *exactly* 4.00 tasks (12 quanta of 1/3 task of 240).
+Under a continuous-noise model, 4 draws landing in 2 buckets is ~1% likely. The
+variance is **structural, two modes — not a spread.**
+
+Leading explanation is the clock: a 240-task run needs ~11.34h of an 11.67h
+window, so a ~4% slow run leaves ~15 tasks unstarted, which at a ~26% solve rate
+is the 4 tasks observed. Eval cannot show this: 120 tasks use 5.2h of the same
+window.
+
+**But this is a tax, not a recoverable loss, and it was nearly a trap.**
+Kaggle displays your *best* submission, and 29.31 is already on the board. If
+the two modes are "finished the queue" and "did not", then **29.31 is the
+un-truncated score and we are already showing it.** Fixing truncation would move
+the leaderboard only if the *fast* runs also drop tasks — possible, unmeasurable
+from here, and small. Chasing the 1.67pp buys nothing; raising the ceiling does.
+
+**This also kills best-of-N resubmission** (§5): if the distribution is two
+values, no number of submissions reaches 30.97. That strategy was recommended on
+2026-09-05 from a Gaussian fit to 3 points and was falsified the next day.
+
+### v45 — the squeezed-budget test, and what it actually settled
+
+60 eval tasks into a ~2.26h window, meant to be 1.15x oversubscribed.
+**It missed: calibrated with the 120-task mean (624s/task) against a 60-task
+subset that runs at 538s/task, so it landed at 0.99x and just fit.** Result:
+60/60 done, `queue_left=0`, `out_of_time=False`, 3 tasks hit the 1200s cap.
+Truncation was not reproduced, so the hypothesis stands **untested**. To redo it
+properly the window is ~1.95h (`ARC_TOTAL_BUDGET_S=7920`).
+
+It did close both headroom levers, which is why it was still worth the quota:
+
+| Lever | Verdict |
+|---|---|
+| `use_cache=False` in `calc_scores` | **No measurable gain.** Apparent -13.8% mean speedup is the cheaper subset. TTFT is the control — it *cannot* be affected by the change, and it moved -16.1% while decode moved -14.1%, so decode/TTFT actually rose 2.4%. Kept: free and algebraically identical, but do not count on it |
+| Gradient checkpointing off (~1h) | **Unsafe.** `peak_train_mb` is 13129 MB and *identical on all 60 tasks* — with checkpointing on, activations are negligible and the peak is weights+optimizer. Off, activations scale with sequence length; at `max_seq_length=8192` that is >20 GB on top of 13.1 GB against a ~22.5 GB card. Long tasks would OOM, and the worker survives an OOM by *skipping the task*, so it would silently drop the biggest puzzles |
+
+> **Lesson:** calibrate an experiment against the population it will actually
+> run on. The squeeze used a mean measured on 120 tasks to size a window for a
+> 60-task subset of them, and the 13% error was exactly enough to miss.
+> Second lesson, more useful: **TTFT is a free internal control for any change
+> that touches only decoding.** It scales with task size but cannot be affected
+> by decode-side edits, so the decode/TTFT ratio removes the subset effect.
+> Without it, v45 would have been written up as a 13.8% speedup that is not real.
+
+---
+
 ## 6. Already tested and rejected — do not redo
 
 | Lever | Verdict | How we know |
 |---|---|---|
 | Lower the probability floor globally | **Harmful** | 19.9h against an 11.6h budget; pass@2 flat at 28.0% across every floor below 0.2 |
 | Lower the floor *conditionally*, on starved outputs only | **Worthless** | 43/172 with and without, zero net flips, on the published run of a strictly more aggressive version (A3). Recovers missing candidates; none is correct |
+| `use_cache=False` in teacher-forced scoring | No gain | decode/TTFT ratio rose 2.4% (§5a). Harmless, kept |
+| Gradient checkpointing off, to buy ~1h | **Unsafe** | training peak 13.1 GB is activation-free *because* checkpointing is on; off, 8192-token tasks blow a 22.5 GB card and get silently skipped (§5a) |
+| Best-of-N resubmission | **Dead** | the score has two modes, not a spread; 29.31 is a ceiling and is already displayed (§5a) |
 | Raise the floor above 0.2 | **Harmful** | pass@2 falls monotonically: 26.4 → 25.2 → 24.5 → 23.9 |
 | Length-normalised candidate scoring | Worse | 139 vs 144 of 151 |
 | Dual-selector attempts | No gain | 144, unchanged, every pairing |
