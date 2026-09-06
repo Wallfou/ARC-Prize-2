@@ -614,6 +614,9 @@ def worker(rank, queue, end_time):
 
     dir_outputs = arc_config.OUTPUT_DIR
     os.makedirs(dir_outputs, exist_ok=True)
+    # Captured so a sweep can redirect per work item without losing the default.
+    base_dir_outputs = dir_outputs
+    base_lr = train_args["learning_rate"]
 
     worker_start = time.time()
     num_done = 0
@@ -630,6 +633,20 @@ def worker(rank, queue, end_time):
         key = queue.get()
         if key is None:
             break
+
+        # A sweep item is (task, lr); a normal item is just the task. Each value
+        # gets its own output directory so the two arms never collide on a
+        # filename -- candidates are named by task and augmentation, not by lr.
+        lr = None
+        if isinstance(key, tuple):
+            key, lr = key
+        if lr is None:
+            train_args["learning_rate"] = base_lr
+            dir_outputs = base_dir_outputs
+        else:
+            train_args["learning_rate"] = lr
+            dir_outputs = os.path.join(arc_config.SWEEP_DIR, f"lr_{lr:g}")
+            os.makedirs(dir_outputs, exist_ok=True)
 
         # One bad puzzle must not take the run with it. Inference memory
         # scales with sequence length and the 4B sits close to the L4 ceiling
@@ -950,7 +967,7 @@ def worker(rank, queue, end_time):
                    done=num_done, truncated=truncated,
                    avg_seconds=round(avg, 1), affordable=affordable,
                    outputs=len(test_id_to_subkeys),
-                   retried=retried,
+                   retried=retried, lr=train_args["learning_rate"],
                    ttft_s=round(t_train_done - start_time, 1),
                    decode_s=round(t_decode_done - t_train_done, 1),
                    retry_s=round(time.time() - t_decode_done, 1),

@@ -105,6 +105,10 @@ SUBMISSION_PATH = os.path.join(WORK_DIR, "submission.json")
 # reruns, whose only output is submission.json), and far easier to
 # analyse than regexing the log.
 RUN_LOG_DIR = os.path.join(WORK_DIR, "run_logs")
+# One subdirectory per swept value. Deliberately NOT under OUTPUT_DIR: the
+# decoder lists that directory and bz2-opens every entry, and it is kept
+# byte-identical to NVARC's, so a nested directory there would crash it.
+SWEEP_DIR = os.path.join(WORK_DIR, "sweep_outputs")
 
 
 def model_path():
@@ -242,6 +246,36 @@ RETRY_BUDGET_S = float(os.environ.get("ARC_RETRY_BUDGET_S", 300))
 # deadline at the worker's current pace. On a 120-task eval commit run, which
 # uses 5.2h of the same budget, the slack is large and it fires freely.
 RETRY_PACE_MARGIN = int(os.environ.get("ARC_RETRY_PACE_MARGIN", 8))
+
+
+# --- A2: within-run learning-rate sweep ---------------------------------------
+# Test-time fine-tuning is the only lever that touches the 67.4% generation gap,
+# and lr is the only part of the A2 bundle that is free: it does not change the
+# step count, where `num_train_epochs` 1->2 and `augment(n=)` 16->32 each add
+# ~3.2h to a 240-task run against ~1.2h of slack.
+#
+# The problem is measurement, not the change. The eval loop's own noise floor is
+# 3.47pp (measured v40 vs baseline on outputs nothing touched), and unlike the
+# A3 retry an lr change has no inert subset to partition on -- it touches every
+# output. Two separate runs cannot resolve the ~1pp an lr change might be worth.
+#
+# So sweep WITHIN one run: enqueue each task once per lr value and write each
+# variant to its own output directory. Every pair is then compared on the same
+# machine, in the same run, under the same clock -- which removes the run-level
+# variance that dominates (§5a: machine speed -> truncation) and leaves only
+# per-task batched-decode nondeterminism. Costs one extra fine-tune+decode per
+# value, so N values is N times the run.
+#
+# Empty = off, and the sweep must never reach a scored run: it would multiply
+# the work and cover only 240/N tasks. Guarded with the budget below.
+LR_SWEEP = [float(x) for x in
+            os.environ.get("ARC_LR_SWEEP", "").replace(" ", "").split(",") if x]
+
+if LR_SWEEP and is_rerun():
+    print(f"!!! ARC_LR_SWEEP was {LR_SWEEP} on a scored rerun -- forcing off. A "
+          f"sweep enqueues every task once per value, so it would cover only "
+          f"240/{len(LR_SWEEP)} tasks and submit fallbacks for the rest.")
+    LR_SWEEP = []
 
 
 def retry_slack(queued, elapsed_s, num_done, remaining_s, num_workers=None):

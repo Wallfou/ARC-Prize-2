@@ -5,6 +5,7 @@ valid submission always exists on disk even if the solver never finishes.
 """
 
 import os
+import glob
 import json
 import argparse
 
@@ -119,8 +120,32 @@ def build(selector="kgmon", challenges_path=None, solutions_path=None, out_path=
     if solutions_path:
         data = data.load_replies(solutions_path)
 
+    # A learning-rate sweep writes one subdirectory per value. Score each arm
+    # here rather than only offline: the arms are paired within this run, and
+    # printing both scores puts the comparison straight into the run log instead
+    # of behind a ~1900-file download. The base directory is used for the actual
+    # submission, so a sweep still produces a valid (if partial) file.
+    cand_dir = arc_config.OUTPUT_DIR
+    arms = sorted(d for d in glob.glob(os.path.join(arc_config.SWEEP_DIR, "lr_*"))
+                  if os.path.isdir(d))
+    if arms and solutions_path:
+        print(f"*** LR SWEEP: {len(arms)} arms")
+        for arm in arms:
+            d = ArcDecoder(data.split_multi_replies(), n_guesses=2)
+            d.load_decoded_results(arm)
+            sub = data.get_submission(d.run_selection_algo(SELECTORS[selector]))
+            score = data.validate_submission(sub)
+            print(f"***   {os.path.basename(arm):<14} "
+                  f"outputs={len(d.decoded_results):>4}  "
+                  f"score={score:.2f}/{len(data.keys)} = "
+                  f"{100 * score / len(data.keys):.2f}%")
+        # Fall through on the arm with the most candidates so the guard in the
+        # final cell sees real predictions rather than an all-fallback file.
+        cand_dir = max(arms, key=lambda a: len(os.listdir(a)))
+        print(f"*** submission built from {os.path.basename(cand_dir)}")
+
     decoder = ArcDecoder(data.split_multi_replies(), n_guesses=2)
-    decoder.load_decoded_results(arc_config.OUTPUT_DIR)
+    decoder.load_decoded_results(cand_dir)
     print(f"*** Loaded candidates for {len(decoder.decoded_results)} test outputs")
 
     submission = data.get_submission(decoder.run_selection_algo(SELECTORS[selector]))

@@ -228,6 +228,63 @@ def check_completion_masking():
           all(v == -100 for v in lab))
 
 
+def check_lr_sweep():
+    """The A2 sweep must pair arms within one run, and never reach a scored one.
+
+    An lr change touches every output, so unlike the A3 retry it has no inert
+    subset to partition on, and the eval loop's own noise floor is 3.47pp. The
+    sweep exists to make the comparison paired within a single run. Two things
+    must hold: the queue carries one item per (task, lr) so both arms see the
+    same machine and clock, and a sweep left on during a scored rerun is forced
+    off -- it would cover only 240/N tasks and submit fallbacks for the rest.
+    """
+    import ast
+    import subprocess
+
+    src = "import arc_config as c; print(c.LR_SWEEP)"
+    base = {**os.environ, "ARC_LR_SWEEP": "5e-5,1e-4",
+            "PYTHONPATH": os.path.join(HERE, "src")}
+    base.pop("KAGGLE_IS_COMPETITION_RERUN", None)
+    commit = subprocess.run([sys.executable, "-c", src], env=base,
+                            capture_output=True, text=True)
+    rerun = subprocess.run([sys.executable, "-c", src],
+                           env={**base, "KAGGLE_IS_COMPETITION_RERUN": "1"},
+                           capture_output=True, text=True)
+    check("a commit run keeps the lr sweep",
+          commit.stdout.strip().endswith("[5e-05, 0.0001]"),
+          commit.stdout.strip()[-40:] or commit.stderr[-120:])
+    check("a scored rerun forces the lr sweep off",
+          rerun.stdout.strip().endswith("[]"),
+          rerun.stdout.strip()[-40:] or rerun.stderr[-120:])
+
+    # The pairing property lives in how starter.py builds the queue: task-major,
+    # so a run cut short leaves both arms covering the same prefix.
+    starter = ast.parse(open(os.path.join(HERE, "src", "starter.py")).read())
+    dumped = ast.dump(starter)
+    check("starter enqueues one item per (task, lr)",
+          "LR_SWEEP" in dumped and "'put'" in dumped.replace('"', "'"))
+    lines = open(os.path.join(HERE, "src", "starter.py")).read().split("\n")
+    try:
+        i = next(i for i, l in enumerate(lines) if "for key in keys:" in l
+                 and "for lr" in lines[i + 1])
+        check("the sweep loop is task-major, so a truncated run stays paired",
+              "for lr in arc_config.LR_SWEEP" in lines[i + 1], lines[i + 1].strip())
+    except StopIteration:
+        check("the sweep loop is task-major, so a truncated run stays paired",
+              False, "no task-major nesting found")
+
+    # Arms must not land inside OUTPUT_DIR: the decoder lists it and bz2-opens
+    # every entry, and it is kept byte-identical to NVARC's.
+    import arc_config
+    check("sweep arms live outside OUTPUT_DIR (decoder would crash on a subdir)",
+          not arc_config.SWEEP_DIR.rstrip("/").startswith(
+              arc_config.OUTPUT_DIR.rstrip("/") + os.sep),
+          f"{arc_config.SWEEP_DIR} vs {arc_config.OUTPUT_DIR}")
+    decoder = open(os.path.join(HERE, "src", "arc_decoder.py")).read()
+    check("arc_decoder.py is still unmodified (no isdir guard needed)",
+          "isdir" not in decoder)
+
+
 def check_rerun_budget_guard():
     """A shortened experiment budget must not survive into a scored rerun.
 
@@ -432,6 +489,8 @@ def main():
     print()
     check_completion_masking()
     print()
+    check_lr_sweep()
+
     check_rerun_budget_guard()
 
     check_starved_retry()
