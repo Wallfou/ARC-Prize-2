@@ -228,6 +228,45 @@ def check_completion_masking():
           all(v == -100 for v in lab))
 
 
+def check_rerun_budget_guard():
+    """A shortened experiment budget must not survive into a scored rerun.
+
+    ARC_TOTAL_BUDGET_S is set low for squeezed-budget experiments. If that
+    leaked into a scored run the solver would stop hours early and submit
+    fallbacks for everything it never reached -- a silent near-zero that looks
+    like a clean run, the same shape as the eval-mode trap TASK_SET guards
+    against. Import arc_config in a subprocess with the rerun env var set and
+    check the values it actually ends up with.
+    """
+    import subprocess
+    src = ("import arc_config as c;"
+           "print(c.TOTAL_BUDGET_S, c.SAFETY_MARGIN_S, c.TASK_SET)")
+    for env_extra, label in [
+            ({"KAGGLE_IS_COMPETITION_RERUN": "1"}, "scored rerun"),
+            ({}, "commit run")]:
+        env = {**os.environ, "ARC_TOTAL_BUDGET_S": "9039",
+               "ARC_SAFETY_MARGIN_S": "300", "ARC_TASK_SET": "eval",
+               "PYTHONPATH": os.path.join(HERE, "src")}
+        env.update(env_extra)
+        env.pop("KAGGLE_IS_COMPETITION_RERUN", None) if not env_extra else None
+        out = subprocess.run([sys.executable, "-c", src], env=env,
+                             capture_output=True, text=True)
+        if out.returncode != 0:
+            check(f"arc_config imports on a {label}", False, out.stderr[-200:])
+            continue
+        total, margin, task_set = out.stdout.strip().split()[-3:]
+        if env_extra:
+            check("scored rerun forces the full 12h budget",
+                  float(total) == 12 * 3600, f"got {total}s")
+            check("scored rerun forces the full safety margin",
+                  float(margin) >= 1200, f"got {margin}s")
+            check("scored rerun forces test mode", task_set == "test",
+                  f"got {task_set}")
+        else:
+            check("a commit run keeps the squeezed budget",
+                  float(total) == 9039, f"got {total}s")
+
+
 def check_starved_retry():
     """The conditional deep retry must be more permissive than the main pass,
     must be reachable, and must never fire when the run is behind schedule.
@@ -393,6 +432,8 @@ def main():
     print()
     check_completion_masking()
     print()
+    check_rerun_budget_guard()
+
     check_starved_retry()
 
     check_end_to_end(data_dir)

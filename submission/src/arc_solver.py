@@ -511,7 +511,11 @@ def calc_scores(queries, answers, tokenizer, model):
         padded = tokens + [PAD_ID] * (max_len - len(tokens))
         padded_tokens.append(padded)
     input_ids = torch.tensor(padded_tokens, device=model.device, dtype=torch.long)
-    outputs = model(input_ids=input_ids, return_dict=True, use_cache=True)
+    # use_cache=False: this is a single teacher-forced pass and nothing ever reads
+    # past_key_values, so building it is pure cost. Mathematically identical --
+    # only outputs.logits is used. (The DFS pass in inference_turbo_dfs genuinely
+    # needs its cache; do not copy this there.)
+    outputs = model(input_ids=input_ids, return_dict=True, use_cache=False)
     batch_logits = outputs.logits.float().cpu().log_softmax(-1)
     result = []
     for logits, query_tokens, answer_tokens in zip(batch_logits, batch_query_tokens, batch_answer_tokens):
@@ -615,6 +619,7 @@ def worker(rank, queue, end_time):
     num_done = 0
     num_failed = 0
     _probed = False
+    peak_train_mb = -1
 
     while not queue.empty():
 
@@ -696,6 +701,7 @@ def worker(rank, queue, end_time):
             torch.cuda.empty_cache()
             
             memory_allocated = torch.cuda.max_memory_allocated() // 1024**2
+            peak_train_mb = memory_allocated
             print(f"[Rank {rank}] allocated {memory_allocated}MB for training")
 
             torch.cuda.reset_peak_memory_stats()
@@ -755,6 +761,7 @@ def worker(rank, queue, end_time):
                 # property of the output, not of one augmented view of it.
                 uniq_by_bk = defaultdict(set)
                 retried = False
+                truncated_reasons = []
                 # Entries written per view so far. The retry re-decodes a view it
                 # already decoded, and kgmon ranks on the number of beam hits, so
                 # the two passes' counts must not be mixed -- keep whichever single
@@ -769,10 +776,13 @@ def worker(rank, queue, end_time):
                     # Assigned below; without this the one-off probe flag would
                     # become a local of this function and read before assignment.
                     nonlocal _probed
+                    nonlocal_truncated = truncated_reasons
                     for subkeys in pass_batches:
 
                         spend_time = time.time() - start_time
                         if spend_time > pass_budget_s or time.time() > end_time:
+                            nonlocal_truncated.append(
+                                "deadline" if time.time() > end_time else "puzzle_cap")
                             print(f"[Rank {rank}] {label} timeout after {spend_time:.1f}s for puzzle {key}")
                             break
 
@@ -922,6 +932,7 @@ def worker(rank, queue, end_time):
             memory_allocated = torch.cuda.max_memory_allocated() // 1024**2
             print(f"[Rank {rank}] allocated {memory_allocated}MB for inference")
 
+            truncated = truncated_reasons[0] if truncated_reasons else None
             spend_time = time.time() - start_time
             num_done += 1
 
@@ -935,7 +946,8 @@ def worker(rank, queue, end_time):
                 f"| {affordable} more fit before deadline"
             )
             record(rank, key=key, ok=True, seconds=round(spend_time, 1),
-                   peak_infer_mb=memory_allocated, done=num_done,
+                   peak_infer_mb=memory_allocated, peak_train_mb=peak_train_mb,
+                   done=num_done, truncated=truncated,
                    avg_seconds=round(avg, 1), affordable=affordable,
                    outputs=len(test_id_to_subkeys),
                    retried=retried,
@@ -961,8 +973,20 @@ def worker(rank, queue, end_time):
             continue
 
     # num_done / num_failed were previously only ever visible mid-log.
+    # Tasks still queued when this worker stopped. On a 240-task scored run the
+    # margin is ~10-20 min of 11.67h, so the run can end with work outstanding --
+    # and a task never started scores zero. This is the number that says whether
+    # the score is capped by the clock rather than by the model. Not retrievable
+    # for a scored rerun, hence measuring it on a deliberately squeezed eval run.
+    try:
+        left = max(0, queue.qsize() - arc_config.NUM_WORKERS)
+    except (NotImplementedError, OSError):
+        left = -1
+    out_of_time = time.time() > end_time
     print(f"[Rank {rank}] summary: done={num_done} failed={num_failed} "
+          f"queue_left={left} out_of_time={out_of_time} "
           f"elapsed={(time.time() - worker_start) / 60:.1f}min", flush=True)
     record(rank, summary=True, done=num_done, failed=num_failed,
+           queue_left=left, out_of_time=out_of_time,
            elapsed_min=round((time.time() - worker_start) / 60, 1),
            task_set=arc_config.TASK_SET)

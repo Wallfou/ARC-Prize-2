@@ -149,6 +149,24 @@ SMOKE_TEST_KEYS = ["00576224", "007bbfb7", "009d5c81", "00d62c1b"]
 TOTAL_BUDGET_S = float(os.environ.get("ARC_TOTAL_BUDGET_S", 12 * 3600))
 SAFETY_MARGIN_S = float(os.environ.get("ARC_SAFETY_MARGIN_S", 1200))
 
+# A shortened budget is an experiment-only setting. Left on by accident during a
+# scored rerun it would stop the solver hours early and quietly submit mostly
+# fallbacks -- the same silent-zero shape as an eval-mode submission, which is
+# why TASK_SET is force-corrected above. Force this one too, for the same reason:
+# the guard must cover every knob that can truncate a scored run, not just the
+# one that has burned us before.
+if is_rerun():
+    if TOTAL_BUDGET_S < 12 * 3600:
+        print(f"!!! ARC_TOTAL_BUDGET_S was {TOTAL_BUDGET_S:.0f}s on a scored "
+              f"rerun -- forcing {12 * 3600}s. A short budget silently submits "
+              f"fallbacks for every task the solver never reaches.")
+        TOTAL_BUDGET_S = 12 * 3600
+    if SAFETY_MARGIN_S < 1200:
+        print(f"!!! ARC_SAFETY_MARGIN_S was {SAFETY_MARGIN_S:.0f}s on a scored "
+              f"rerun -- forcing 1200s. Kaggle hard-kills at 12h and misreports "
+              f"runtime by up to ~10min; too small a margin loses the whole run.")
+        SAFETY_MARGIN_S = 1200.0
+
 # Per-puzzle wall clock before we stop decoding and move on (NVARC used 1200).
 PUZZLE_BUDGET_S = float(os.environ.get("ARC_PUZZLE_BUDGET_S", 1200))
 # Per-DFS-call cap (NVARC used 540).
