@@ -90,6 +90,42 @@ on the eval split — identical to ours, output for output** — and his deep pa
 adds nothing. So there is *no code difference* behind his +2.5pp. What differs
 is **38 submissions against our 6**, into a 1.67pp noise floor. See §5.
 
+### A2 preamble: what test-time fine-tuning is worth — ✅ +5.83pp, measured 2026-09-07 (v49)
+
+The first positive result in three sessions, and the number the project never had.
+`lr=0` leaves the LoRA adapter at its identity init, so that arm **is the base
+model with no test-time fine-tuning**. Paired against 5e-5 inside one run,
+40 tasks x 2 arms, 80/80 items, zero failures, no truncation.
+
+| arm | score | **generation recall** | ranked-out | starved | cands/output |
+|---|---|---|---|---|---|
+| `lr=0` (no TTFT) | 8.50/40 = **21.25%** | 12/62 = **19.4%** | 0 | 40 | 1.5 |
+| `lr=5e-5` | 10.83/40 = **27.08%** | 21/62 = **33.9%** | 4 | 10 | 6.5 |
+
+Paired flips: **+7 gained, −2 lost, net +5 outputs** — far above the ~2 total
+discordance v47 measured as the within-run noise level. This is real.
+
+**TTFT's entire mechanism is generation, which is the bottleneck.** It nearly
+doubles generation recall (19.4% → 33.9%), quadruples candidates per output
+(1.5 → 6.5), and cuts starvation from 40 outputs to 10. Selection barely
+features: ranked-out goes 0 → 4, i.e. TTFT *creates* the selection problem by
+generating enough to choose between.
+
+Two conclusions:
+
+1. **Keep it, and stop looking for time there.** 30.2% of runtime buys +5.83pp —
+   the best return of anything measured in this project. "Skip the trainer to
+   buy headroom" is closed.
+2. **This checkpoint does respond to data-shaped work, on the axis that
+   matters.** That is the first evidence for Tier B rather than against it.
+
+But note the size against the literature: the TTT study reports 17.5% → 45%
+(+27pp) and we measure +5.83pp. The difference is that `sft139` is *already*
+trained on 3.2M ARC-format samples, so it has banked most of the
+pre-specialisation gain — the base model alone scores 21.25% with no adaptation
+at all. **That cuts both ways for B1**: the model responds to ARC-shaped data,
+and it has already eaten most of what ARC-shaped data gives.
+
 ### A2. Learning rate — ❌ NULL, measured 2026-09-06 (v47). Epochs/augment do not fit.
 
 Swept 5e-5 / 1e-4 / 2e-4 **within one run**, 40 tasks x 3 arms, paired per task.
@@ -109,9 +145,15 @@ signature of per-task decode nondeterminism, not of a learning-rate response.
 Sanity check passed: the 5e-5 arm scores 25.83% on these 40 tasks against 26.11%
 on the full 120, so the harness is behaving.
 
-**The rest of A2 is not reachable.** `num_train_epochs` 1→2 and `augment(n=)`
-16→32 each add ~3.2h to a 240-task run against ~1.2h of slack (§5), and TTFT is
-30.2% of runtime. lr was the only free component and it is spent.
+**The rest of A2 costs time — but v49 makes the trade fundable for the first
+time.** `num_train_epochs` 1→2 and `augment(n=)` 16→32 each add ~3.2h to a
+240-task run against ~1.2h of slack (§5). Previously that was the end of it.
+Now we know the TTFT dose-response is steep at the start (0→1 epoch = +5.83pp)
+and that decode is 61.9% of runtime while contributing a *selection* headroom of
+only 4/62 outputs. So decode time is the thing to sell to buy TTFT time.
+**Next experiment: sweep `num_train_epochs` 1 vs 2 within a run.** If 1→2 is
+worth even +2pp, look for 3.2h in the decode budget; if it is ~0, TTFT is
+saturated at 1 epoch and the whole family really is finished.
 
 Honest limit: 2 discordant outputs means nothing under ~1.6pp (1 output of 62)
 is resolvable. This is a clean null **for a large effect**, not proof of zero.
