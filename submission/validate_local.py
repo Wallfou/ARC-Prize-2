@@ -228,75 +228,74 @@ def check_completion_masking():
           all(v == -100 for v in lab))
 
 
-def arc_config_lr0():
-    """LR_SWEEP as parsed from a spec whose first value is 0."""
+def sweep_probe(param, spec, rerun=False):
+    """LR_SWEEP-equivalent: what arc_config parses for a given sweep spec."""
     import subprocess
-    env = {**os.environ, "ARC_LR_SWEEP": "0,5e-5",
+    env = {**os.environ, "ARC_SWEEP_PARAM": param, "ARC_SWEEP": spec,
            "PYTHONPATH": os.path.join(HERE, "src")}
     env.pop("KAGGLE_IS_COMPETITION_RERUN", None)
-    out = subprocess.run([sys.executable, "-c",
-                          "import arc_config as c; print(c.LR_SWEEP)"],
-                         env=env, capture_output=True, text=True)
+    if rerun:
+        env["KAGGLE_IS_COMPETITION_RERUN"] = "1"
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import arc_config as c; print(repr((c.SWEEP, c.SWEEP_TAG, "
+         "[c.sweep_dir(v) for v in c.SWEEP])))"],
+        env=env, capture_output=True, text=True)
     try:
         return eval(out.stdout.strip().splitlines()[-1])
     except Exception:
-        return out.stderr[-120:]
+        return ("PARSE FAILED", out.stderr[-160:], None)
 
 
-def check_lr_sweep():
-    """The A2 sweep must pair arms within one run, and never reach a scored one.
+def check_sweep():
+    """The sweep must pair arms within one run, cover any train_args knob, and
+    never reach a scored run.
 
-    An lr change touches every output, so unlike the A3 retry it has no inert
-    subset to partition on, and the eval loop's own noise floor is 3.47pp. The
-    sweep exists to make the comparison paired within a single run. Two things
-    must hold: the queue carries one item per (task, lr) so both arms see the
-    same machine and clock, and a sweep left on during a scored rerun is forced
-    off -- it would cover only 240/N tasks and submit fallbacks for the rest.
+    A change to test-time fine-tuning touches every output, so unlike the A3
+    retry it has no inert subset to partition on, and the eval loop's own noise
+    floor is 3.47pp. Pairing inside one run is what makes it measurable at all.
     """
     import ast
-    import subprocess
 
-    src = "import arc_config as c; print(c.LR_SWEEP)"
-    base = {**os.environ, "ARC_LR_SWEEP": "5e-5,1e-4",
-            "PYTHONPATH": os.path.join(HERE, "src")}
-    base.pop("KAGGLE_IS_COMPETITION_RERUN", None)
-    commit = subprocess.run([sys.executable, "-c", src], env=base,
-                            capture_output=True, text=True)
-    rerun = subprocess.run([sys.executable, "-c", src],
-                           env={**base, "KAGGLE_IS_COMPETITION_RERUN": "1"},
-                           capture_output=True, text=True)
-    check("a commit run keeps the lr sweep",
-          commit.stdout.strip().endswith("[5e-05, 0.0001]"),
-          commit.stdout.strip()[-40:] or commit.stderr[-120:])
-    check("a scored rerun forces the lr sweep off",
-          rerun.stdout.strip().endswith("[]"),
-          rerun.stdout.strip()[-40:] or rerun.stderr[-120:])
+    vals, tag, dirs = sweep_probe("learning_rate", "5e-5,1e-4")
+    check("a commit run keeps the sweep", vals == [5e-05, 0.0001], str(vals))
+    check("learning_rate arms are tagged `lr`", tag == "lr", str(tag))
 
-    # The pairing property lives in how starter.py builds the queue: task-major,
-    # so a run cut short leaves both arms covering the same prefix.
-    starter = ast.parse(open(os.path.join(HERE, "src", "starter.py")).read())
-    dumped = ast.dump(starter)
-    check("starter enqueues one item per (task, lr)",
-          "LR_SWEEP" in dumped and "'put'" in dumped.replace('"', "'"))
+    vals, tag, dirs = sweep_probe("num_train_epochs", "1,2")
+    check("the sweep covers num_train_epochs, not just lr",
+          vals == [1.0, 2.0] and tag == "epochs", f"{vals} {tag}")
+    check("integral values render without a decimal point",
+          dirs and dirs[-1].endswith("epochs_2"), str(dirs))
+
+    vals, _, _ = sweep_probe("num_train_epochs", "1,2", rerun=True)
+    check("a scored rerun forces the sweep off", vals == [], str(vals))
+
+    # 0 is a legitimate value -- lr=0 is how "no test-time fine-tuning" is
+    # expressed -- and it is falsy. A truthiness check on the unpacked value
+    # would route that arm to the baseline knob AND the baseline directory,
+    # yielding two identical arms and a confident null that is pure artifact.
+    vals, _, dirs = sweep_probe("learning_rate", "0,5e-5")
+    check("0 parses as a real sweep value", vals == [0.0, 5e-05], str(vals))
+    solver_src = open(os.path.join(HERE, "src", "arc_solver.py")).read()
+    check("the solver tests the swept value with `is None`, not truthiness",
+          "if value is None:" in solver_src and "if not value:" not in solver_src)
+
+    # Pairing lives in how starter.py builds the queue: task-major, so a run cut
+    # short leaves every arm covering the same prefix.
     lines = open(os.path.join(HERE, "src", "starter.py")).read().split("\n")
     try:
-        i = next(i for i, l in enumerate(lines) if "for key in keys:" in l
-                 and "for lr" in lines[i + 1])
+        i = next(i for i, l in enumerate(lines)
+                 if "for key in keys:" in l and "for value" in lines[i + 1])
         check("the sweep loop is task-major, so a truncated run stays paired",
-              "for lr in arc_config.LR_SWEEP" in lines[i + 1], lines[i + 1].strip())
+              "arc_config.SWEEP" in lines[i + 1], lines[i + 1].strip())
     except StopIteration:
         check("the sweep loop is task-major, so a truncated run stays paired",
               False, "no task-major nesting found")
 
-    # lr=0.0 is a legitimate arm -- it is how "no test-time fine-tuning" is
-    # expressed -- and it is falsy. A truthiness check on the unpacked lr would
-    # silently route that arm to the baseline directory and to the baseline
-    # learning rate, producing two identical arms and a confident null.
-    check("lr=0.0 parses as a real sweep value",
-          arc_config_lr0() == [0.0, 5e-05], str(arc_config_lr0()))
-    solver_src = open(os.path.join(HERE, "src", "arc_solver.py")).read()
-    check("the solver tests the swept lr with `is None`, not truthiness",
-          "if lr is None:" in solver_src and "if not lr:" not in solver_src)
+    # Restoring the baseline arm must restore every knob, not just the swept
+    # one, or a later sweep on a different knob would inherit this one's value.
+    check("a non-sweep item restores the full baseline train_args",
+          "train_args.update(base_train_args)" in solver_src)
 
     # Arms must not land inside OUTPUT_DIR: the decoder lists it and bz2-opens
     # every entry, and it is kept byte-identical to NVARC's.
@@ -514,7 +513,7 @@ def main():
     print()
     check_completion_masking()
     print()
-    check_lr_sweep()
+    check_sweep()
 
     check_rerun_budget_guard()
 

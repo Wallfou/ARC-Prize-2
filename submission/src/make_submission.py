@@ -120,16 +120,16 @@ def build(selector="kgmon", challenges_path=None, solutions_path=None, out_path=
     if solutions_path:
         data = data.load_replies(solutions_path)
 
-    # A learning-rate sweep writes one subdirectory per value. Score each arm
+    # A sweep writes one subdirectory per value. Score each arm
     # here rather than only offline: the arms are paired within this run, and
     # printing both scores puts the comparison straight into the run log instead
     # of behind a ~1900-file download. The base directory is used for the actual
     # submission, so a sweep still produces a valid (if partial) file.
     cand_dir = arc_config.OUTPUT_DIR
-    arms = sorted(d for d in glob.glob(os.path.join(arc_config.SWEEP_DIR, "lr_*"))
+    arms = sorted(d for d in glob.glob(os.path.join(arc_config.SWEEP_DIR, "*"))
                   if os.path.isdir(d))
     if arms and solutions_path:
-        print(f"*** LR SWEEP: {len(arms)} arms")
+        print(f"*** SWEEP: {len(arms)} arms")
         for arm in arms:
             d = ArcDecoder(data.split_multi_replies(), n_guesses=2)
             d.load_decoded_results(arm)

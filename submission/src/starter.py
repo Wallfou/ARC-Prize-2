@@ -69,16 +69,16 @@ if __name__ == "__main__":
     )
 
     queue = mp.Manager().Queue()
-    if arc_config.LR_SWEEP:
+    if arc_config.SWEEP:
         # One work item per (task, lr). Interleave by task rather than running
         # all of one value first, so that if the run is cut short both arms have
         # covered the same prefix of the task list and stay comparable.
-        print(f"*** LR SWEEP {arc_config.LR_SWEEP}: {len(keys)} tasks x "
-              f"{len(arc_config.LR_SWEEP)} values = "
-              f"{len(keys) * len(arc_config.LR_SWEEP)} work items", flush=True)
+        print(f"*** SWEEP {arc_config.SWEEP_PARAM}={arc_config.SWEEP}: "
+              f"{len(keys)} tasks x {len(arc_config.SWEEP)} values = "
+              f"{len(keys) * len(arc_config.SWEEP)} work items", flush=True)
         for key in keys:
-            for lr in arc_config.LR_SWEEP:
-                queue.put((key, lr))
+            for value in arc_config.SWEEP:
+                queue.put((key, value))
     else:
         for key in keys:
             queue.put(key)

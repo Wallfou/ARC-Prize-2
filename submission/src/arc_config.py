@@ -259,23 +259,41 @@ RETRY_PACE_MARGIN = int(os.environ.get("ARC_RETRY_PACE_MARGIN", 8))
 # A3 retry an lr change has no inert subset to partition on -- it touches every
 # output. Two separate runs cannot resolve the ~1pp an lr change might be worth.
 #
-# So sweep WITHIN one run: enqueue each task once per lr value and write each
+# So sweep WITHIN one run: enqueue each task once per value and write each
 # variant to its own output directory. Every pair is then compared on the same
 # machine, in the same run, under the same clock -- which removes the run-level
 # variance that dominates (§5a: machine speed -> truncation) and leaves only
 # per-task batched-decode nondeterminism. Costs one extra fine-tune+decode per
 # value, so N values is N times the run.
 #
+# ARC_SWEEP_PARAM names any key of `train_args`, so the same harness covers
+# learning_rate (v47, null) and num_train_epochs (never tested -- it has been
+# costed twice and discussed as part of the A2 bundle, but `num_train_epochs=1`
+# has not changed since the original port).
+#
 # Empty = off, and the sweep must never reach a scored run: it would multiply
-# the work and cover only 240/N tasks. Guarded with the budget below.
-LR_SWEEP = [float(x) for x in
-            os.environ.get("ARC_LR_SWEEP", "").replace(" ", "").split(",") if x]
+# the work and cover only 240/N tasks. Guarded below.
+SWEEP_PARAM = os.environ.get("ARC_SWEEP_PARAM", "learning_rate")
+SWEEP = [float(x) for x in
+         os.environ.get("ARC_SWEEP", "").replace(" ", "").split(",") if x]
 
-if LR_SWEEP and is_rerun():
-    print(f"!!! ARC_LR_SWEEP was {LR_SWEEP} on a scored rerun -- forcing off. A "
-          f"sweep enqueues every task once per value, so it would cover only "
-          f"240/{len(LR_SWEEP)} tasks and submit fallbacks for the rest.")
-    LR_SWEEP = []
+# Short directory prefix per knob, so arms read `epochs_2` rather than
+# `num_train_epochs_2`. Unknown knobs fall back to their own name.
+SWEEP_TAG = {"learning_rate": "lr",
+             "num_train_epochs": "epochs"}.get(SWEEP_PARAM, SWEEP_PARAM)
+
+
+def sweep_dir(value):
+    """Output directory for one arm. `:g` keeps 2.0 as `epochs_2`."""
+    return os.path.join(SWEEP_DIR, f"{SWEEP_TAG}_{value:g}")
+
+
+if SWEEP and is_rerun():
+    print(f"!!! ARC_SWEEP was {SWEEP} on {SWEEP_PARAM} during a scored rerun -- "
+          f"forcing off. A sweep enqueues every task once per value, so it "
+          f"would cover only 240/{len(SWEEP)} tasks and submit fallbacks for "
+          f"the rest.")
+    SWEEP = []
 
 
 def retry_slack(queued, elapsed_s, num_done, remaining_s, num_workers=None):
