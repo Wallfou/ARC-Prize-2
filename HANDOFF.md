@@ -282,15 +282,47 @@ Code is kept and defaults **off** (`ARC_RETRY_STARVED=0`): `decode_pass` in
 Re-enable only if the *generator* improves enough to change the premise.
 
 
-### A4. Union TRM into `attempt_2` rather than voting on it
-NVARC bolted on TRM (7M params, public weights `cpmpml/arc-prize-trm-031`) and
-got nothing: 27.22 → 27.22. But their own words: *"about 2 or 3 puzzles solved by
-TRM were not solved by Qwen3. Unfortunately, these were not always picked by
-Qwen3 scoring."* That is a **selector** failure, and pass@2 sidesteps it —
-reserve `attempt_2` for TRM's top grid when TRM produced something ours never
-did. Union, not vote. Structurally cannot make things worse.
+### A4. Union TRM into `attempt_2` — ❌ NOT VIABLE. Researched 2026-09-07, primary source.
 
-Caveat: TRM cost NVARC days of dependency conflicts. Keep it behind a flag.
+**Ken was right to doubt this, and the plan misread the source.** Read §4.3–4.4
+of `NVARC/nvarc_2025.pdf` directly rather than the plan's summary.
+
+**1. The plan's "selector failure" premise is only half true.** It quotes *"2 or
+3 puzzles solved by TRM were not solved by Qwen3... not always picked by Qwen3
+scoring"* and concludes pass@2 union recovers all of them. The very next
+sentence, omitted from the plan: *"We found that Qwen3 was picking **one
+evaluation puzzle on average** from TRM in addition to the ones it solved
+directly."* **The selector already recovers ~1 of the 2–3.** A perfect union
+recovers the remaining 1–2 puzzles of 120 = **+0.8 to +1.7pp**, not the +2pp the
+plan claimed by scaling the full 2–3.
+
+**2. The only head-to-head NVARC actually scored was NEGATIVE.** Their live
+submission with TRM scored **20.28%** against **21.53%** without. The +0.97 (2B,
+21.53 → 22.50) came from later untuned resubmissions, and on the 4B — the model
+we run — *"adding TRM yields the same 27.22 score."* Zero.
+
+**3. The killer, which the plan never costed: TRM needs ~2 hours of the 12.**
+*"2000 epochs and only 200 warmup steps. This makes TRM run in about 2 hours on
+Kaggle"*, and their better 4k-epoch version took *"less than 4 hours"*. Against
+our ~20 minutes of slack:
+
+| TRM cost | must free | tasks not done | score lost |
+|---|---|---|---|
+| 2h (2k epochs, 7.5%) | 1.67h = 14.7% of the run | ~35 of 240 | **−4.3pp** |
+| 4h (4k epochs, 10.0%) | 3.67h = 32.4% of the run | ~78 of 240 | **−9.4pp** |
+
+Paying 4.3pp to chase at most 1.7pp — for something that measured **exactly
+zero** on the 4B — is not close. The union *rule* is safe; the **two hours it
+costs are not**, and "structurally cannot make things worse" was only ever true
+of the rule, never of the run it has to fit inside.
+
+**4. Nothing has changed since.** TRM is still ~7.8% on ARC-AGI-2 public and
+6.67% test-time-adapted on semi-private (`arxiv 2511.02886`, `2512.11847`);
+Autoregressive TRM is an explicit negative result (`arxiv 2603.08082`). The 2025
+winning submission was **Qwen3-4B alone** — NVARC dropped the ensemble.
+
+**Do not revisit unless the time budget changes fundamentally.**
+
 
 ### A5. Speculative decoding / fp8 KV cache
 The ARChitects report **4.7× on DFS sampling** and 5.8× on scoring, on Kaggle
@@ -520,6 +552,8 @@ It did close both headroom levers, which is why it was still worth the quota:
 | `use_cache=False` in teacher-forced scoring | No gain | decode/TTFT ratio rose 2.4% (§5a). Harmless, kept |
 | Gradient checkpointing off, to buy ~1h | **Unsafe** | training peak 13.1 GB is activation-free *because* checkpointing is on; off, 8192-token tasks blow a 22.5 GB card and get silently skipped (§5a) |
 | Best-of-N resubmission | **Dead** | the score has two modes, not a spread; 29.31 is a ceiling and is already displayed (§5a) |
+| More TTFT (epochs 1→2) | **Not worth it** | generation rises 33.9→35.5% but ranked-out doubles 4→8; score −2.5pp, and it costs 3.2h against 1.2h of slack (A2) |
+| TRM ensemble / union (A4) | **Not viable** | needs ~2h of the 12 against ~20min of slack: ~4.3pp lost to chase ≤1.7pp that measured 0.00 on the 4B (A4) |
 | Raise the floor above 0.2 | **Harmful** | pass@2 falls monotonically: 26.4 → 25.2 → 24.5 → 23.9 |
 | Length-normalised candidate scoring | Worse | 139 vs 144 of 151 |
 | Dual-selector attempts | No gain | 144, unchanged, every pairing |
