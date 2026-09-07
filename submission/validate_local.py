@@ -228,6 +228,21 @@ def check_completion_masking():
           all(v == -100 for v in lab))
 
 
+def arc_config_lr0():
+    """LR_SWEEP as parsed from a spec whose first value is 0."""
+    import subprocess
+    env = {**os.environ, "ARC_LR_SWEEP": "0,5e-5",
+           "PYTHONPATH": os.path.join(HERE, "src")}
+    env.pop("KAGGLE_IS_COMPETITION_RERUN", None)
+    out = subprocess.run([sys.executable, "-c",
+                          "import arc_config as c; print(c.LR_SWEEP)"],
+                         env=env, capture_output=True, text=True)
+    try:
+        return eval(out.stdout.strip().splitlines()[-1])
+    except Exception:
+        return out.stderr[-120:]
+
+
 def check_lr_sweep():
     """The A2 sweep must pair arms within one run, and never reach a scored one.
 
@@ -272,6 +287,16 @@ def check_lr_sweep():
     except StopIteration:
         check("the sweep loop is task-major, so a truncated run stays paired",
               False, "no task-major nesting found")
+
+    # lr=0.0 is a legitimate arm -- it is how "no test-time fine-tuning" is
+    # expressed -- and it is falsy. A truthiness check on the unpacked lr would
+    # silently route that arm to the baseline directory and to the baseline
+    # learning rate, producing two identical arms and a confident null.
+    check("lr=0.0 parses as a real sweep value",
+          arc_config_lr0() == [0.0, 5e-05], str(arc_config_lr0()))
+    solver_src = open(os.path.join(HERE, "src", "arc_solver.py")).read()
+    check("the solver tests the swept lr with `is None`, not truthiness",
+          "if lr is None:" in solver_src and "if not lr:" not in solver_src)
 
     # Arms must not land inside OUTPUT_DIR: the decoder lists it and bz2-opens
     # every entry, and it is kept byte-identical to NVARC's.
