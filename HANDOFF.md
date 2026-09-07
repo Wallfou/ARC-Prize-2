@@ -90,7 +90,33 @@ on the eval split — identical to ours, output for output** — and his deep pa
 adds nothing. So there is *no code difference* behind his +2.5pp. What differs
 is **38 submissions against our 6**, into a 1.67pp noise floor. See §5.
 
-### A2. Sweep test-time fine-tuning — the only lever that touches the real bottleneck
+### A2. Learning rate — ❌ NULL, measured 2026-09-06 (v47). Epochs/augment do not fit.
+
+Swept 5e-5 / 1e-4 / 2e-4 **within one run**, 40 tasks x 3 arms, paired per task.
+
+```
+lr 5e-05   10.33/40 = 25.83%   <- baseline, best
+lr 1e-04    9.83/40 = 24.58%
+lr 2e-04    9.83/40 = 24.58%
+```
+
+**A 4x span moves 2 of 62 outputs.** 60 of 62 are identical across all three
+arms, and the two that differ move in *opposite* directions — 1e-4 loses
+`4c3d4a41_0`, 2e-4 loses `2d0172a1_0`, neither loses the other's. A systematic
+lr effect would have the 2e-4 arm lose the 1e-4 output *and more*. This is the
+signature of per-task decode nondeterminism, not of a learning-rate response.
+
+Sanity check passed: the 5e-5 arm scores 25.83% on these 40 tasks against 26.11%
+on the full 120, so the harness is behaving.
+
+**The rest of A2 is not reachable.** `num_train_epochs` 1→2 and `augment(n=)`
+16→32 each add ~3.2h to a 240-task run against ~1.2h of slack (§5), and TTFT is
+30.2% of runtime. lr was the only free component and it is spent.
+
+Honest limit: 2 discordant outputs means nothing under ~1.6pp (1 output of 62)
+is resolvable. This is a clean null **for a large effect**, not proof of zero.
+
+### A2 (original text, kept for the reasoning)
 **This is the most important item.** Everything previously tested was search or
 selection, and all of it addresses a 7.6% problem. Test-time fine-tuning is the
 only family that moves the 67.4% (see §4).
@@ -256,8 +282,18 @@ submissions. Use `ARC_TASK_LIMIT=60` to halve the cost when screening.
 > 1. **Partition the outputs by whether the change could reach them** and score
 >    the halves separately, as above. This is what made v40 readable, and it is
 >    free. Only works for changes with an inert subset (A3 had one; A2 does not).
-> 2. For changes that touch everything, take several runs — or make truncation
->    deterministic first (below).
+> 2. For changes that touch everything, **sweep within a single run** — this
+>    works, and it is the most useful thing built this iteration. Enqueue one
+>    work item per (task, variant) and route each to its own output directory
+>    (`ARC_LR_SWEEP` does exactly this; `starter.py` + `SWEEP_DIR`). Every pair
+>    then shares a machine, a run and a clock, which removes the run-level
+>    variance that dominates, and `make_submission` prints a score per arm so
+>    the answer is in the run log rather than behind a ~1900-file download.
+>
+>    Measured effect on v47: **2 discordant outputs of 62 (3.2%) across a 4x lr
+>    span**, against ~10 flips of 172 (5.8%, worth 3.47pp) between runs. Costs
+>    one extra fine-tune+decode per arm, so N arms is N times the run. Enqueue
+>    task-major so a truncated run leaves every arm covering the same prefix.
 >
 > **Where the noise most likely comes from — and it is not what the plan said.**
 > The plan pointed at `madarshbb/reproduce-nvarc-2025-results` as "a
