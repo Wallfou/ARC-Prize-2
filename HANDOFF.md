@@ -145,15 +145,51 @@ signature of per-task decode nondeterminism, not of a learning-rate response.
 Sanity check passed: the 5e-5 arm scores 25.83% on these 40 tasks against 26.11%
 on the full 120, so the harness is behaving.
 
-**The rest of A2 costs time — but v49 makes the trade fundable for the first
-time.** `num_train_epochs` 1→2 and `augment(n=)` 16→32 each add ~3.2h to a
-240-task run against ~1.2h of slack (§5). Previously that was the end of it.
-Now we know the TTFT dose-response is steep at the start (0→1 epoch = +5.83pp)
-and that decode is 61.9% of runtime while contributing a *selection* headroom of
-only 4/62 outputs. So decode time is the thing to sell to buy TTFT time.
-**Next experiment: sweep `num_train_epochs` 1 vs 2 within a run.** If 1→2 is
-worth even +2pp, look for 3.2h in the decode budget; if it is ~0, TTFT is
-saturated at 1 epoch and the whole family really is finished.
+### A2 epochs — ❌ NOT WORTH IT, measured 2026-09-07 (v51). The TTFT family is closed.
+
+`num_train_epochs` 1 vs 2, paired within one run, 40 tasks x 2 arms, 80/80
+items, zero failures. The manipulation worked cleanly: TTFT time doubled
+(149s → 297s median) while decode barely moved (322s → 345s).
+
+| arm | score | generation recall | ranked-out | starved | cands/output |
+|---|---|---|---|---|---|
+| `epochs_1` | 10.83/40 = **27.08%** | 21/62 = 33.9% | **4** | 11 | 6.3 |
+| `epochs_2` | 9.83/40 = **24.58%** | 22/62 = **35.5%** | **8** | 9 | 6.9 |
+
+Paired flips: 2 gained, 5 lost, **net −3 outputs**.
+
+**The mechanism is the interesting part, and it is not what was expected.** A
+second epoch *does* keep improving generation — recall rises 33.9% → 35.5% and
+candidates per output 6.3 → 6.9. But **ranked-out doubles, 4 → 8.** It finds the
+right grid slightly more often and buries it. Score falls because selection
+cannot keep up with the extra candidates.
+
+Be honest about the statistics: with 2 gained and 5 lost, McNemar's exact
+two-sided p = 0.45. **The −2.5pp is not significant.** But the decision does not
+need significance — 2 epochs costs ~3.2h on a 240-task run against ~1.2h of
+slack, and it is *at best neutral*. You would never pay 3.2h for that.
+
+**So the TTFT dose-response saturates at 1 epoch and the family is closed:**
+
+```
+0 epochs (lr=0) : 21.25%   generation 19.4%
+1 epoch         : 27.08%   generation 33.9%   <- optimum, NVARC chose correctly
+2 epochs        : 24.58%   generation 35.5%
+```
+
+Generation is monotone; score is not. `augment(n=)` 16→32 is the same shape of
+bet at the same price and is not worth a run on this evidence.
+
+**A forward-looking finding worth keeping.** Selection headroom *grows* as
+generation improves: ranked-out went 0 → 4 → 8 across the three TTFT doses. The
+four rankers that all measured "worse" were measured in today's weak-generation
+regime. **If Tier B or a bigger model ever improves generation, re-open
+selection** — it will have become a real problem by then.
+
+Reproducibility note: v51's `epochs_1` arm scores 10.83/40 with 21/62 generated,
+byte-for-byte what v49's `lr=5e-5` arm scored on a different day. Cross-run
+reproducibility on score is far better than the 3.47pp of §5 — more evidence
+that that noise was the truncation mode, not decode nondeterminism.
 
 Honest limit: 2 discordant outputs means nothing under ~1.6pp (1 output of 62)
 is resolvable. This is a clean null **for a large effect**, not proof of zero.
