@@ -636,6 +636,46 @@ not set up):
 
 ---
 
+## 8a. Tier B — what it is, and what actually verifies (checked 2026-09-08)
+
+"Tier B" in the Notion plan means **better training data**: stop tuning the
+solver and instead improve the checkpoint it runs, since the measured bottleneck
+is that the model never generates the right grid for 67.4% of outputs. It is
+four proposals. **Verified each against the source, because five external claims
+from that plan have now failed** (A1's three scores, the batch-invariant
+notebook, A4's paper quote):
+
+| | What it is | Verified? |
+|---|---|---|
+| **B1 ARC-GEN** | `github.com/google/ARC-GEN` — procedural *generators*, so unbounded sampling. Continued LoRA SFT on `sft139` with a few hundred thousand samples in NVARC's grid format. ~$400–580 for an 8xH100 node-day | ✅ **Real.** Changelog: *"2026-03-25: ARC-GEN now supports 500 additional tasks from ARC-AGI-2."* 400 v1 + 500 v2 generators, Apache-2.0, has `arc_gen.py validate`. **Covers 0 of the public eval set, so it keeps our only yardstick honest** |
+| **B2 NVIDIA / LAION** | `nvidia/Nemotron-SFT-ARC-AGI-v1` plus LAION's transductive reformat of it | ⚠️ **Half false, and the useful half is the false half.** The NVIDIA set is real (2,089 downloads, 18.4 GB) but is **multi-turn agentic reasoning traces with tool calls** — the wrong shape for a 16-token transductive model. The plan's answer was `laion/nemotron-gym-arc-agi-transductive-v2`, "Apache-2.0 and already the right shape". **It does not exist** — `author=laion&search=arc` returns zero datasets. And extracting grid pairs from the NVIDIA traces adds little: they are traces of solving *ARC-AGI-2 puzzles we already have*, and a transductive model gains nothing from a puzzle it already trains on |
+| **B3 ARChitects' mix** | ReARC + ARC-GEN-100K + ARC-1/2 train+eval + ARC-Heavy + ConceptARC. Free; useful as a sanity check on our mix | Plausible but low value — `sft139` already trained on 3.2M augmented samples. (BARC *data* is fine; BARC *weights* carry the Llama-3.1 Community Licence, a prize-eligibility risk) |
+| **B4 SOAR** | `arxiv.org/abs/2507.14172` — self-improving loop: evolutionary search, then fine-tune on its own traces including failures | ✅ Paper real, **but it is program synthesis (induction), on ARC-AGI-1.** Our solver is transductive. This is an architecture change, not a data pass. The transductive analogue is self-distilling our own correct outputs, which is a different and unproven thing |
+
+**So Tier B is really just B1.** That is the honest scope: an ARC-GEN sampler in
+NVARC's grid format, contamination-hashed against the 120 eval tasks, then
+continued LoRA SFT on `sft139`.
+
+**What our own measurements say about whether it will work — both directions:**
+
+- *For.* v49: test-time fine-tuning is worth **+5.83pp** and works **entirely
+  through generation** (recall 19.4% → 33.9%). This checkpoint demonstrably
+  responds to data-shaped work on exactly the broken axis.
+- *Against.* That +5.83pp is a fifth of the TTT literature's +27pp, because
+  `sft139` already scores **21.25% with no adaptation at all** — it has banked
+  most of the pre-specialisation gain. And the one clean scaling datapoint we own
+  is **capacity**: 2B → 4B = **+7.5pp** from parameters on the same mix.
+- *And if it works, it creates a second problem.* v51: selection headroom grows
+  with generation (ranked-out 0 → 4 → 8 across TTFT doses). Budget for re-opening
+  the rankers, which were all rejected in today's weak-generation regime.
+
+**Cost and calendar.** ~$400–580 plus days of sampler/contamination/training
+work, against ~55 days to Nov 2. B5's funding routes (Strong Compute grants
+$5k–$50k with ARC Prize participants prioritised; Lambda/Modal/GCP credits via
+`arcprize.org/partners`) have lead time, so apply before deciding, not after.
+
+---
+
 ## 9. The honest strategic picture
 
 The recipe is near its ceiling around 30%, measured from several directions.
